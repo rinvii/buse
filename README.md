@@ -5,23 +5,46 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/buse)](https://pypi.org/project/buse/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**buse** (Browser Use CLI) is a stateless, universal CLI driver for the `browser-use` library. It allows AI agents (or humans) to control persistent, background browser instances using standard shell commands and structured output.
+Control your browser from your terminal.
 
-## Features
+buse is a stateless CLI designed for AI agents and automation scripts. It turns complex browser interaction into simple, structured command-line primitives.
 
-- **Persistent Sessions**: Multiple browser instances (e.g., `browser-1`, `browser-2`) can run simultaneously.
-- **Stateless Control**: Every CLI command is atomic—connecting, executing, and returning a "receipt".
-- **Universal Primitives**: Includes coordinate clicking, JS execution, and hover support.
-- **Vision-Ready**: `observe` outputs minified DOM and a screenshot path.
-- **Session Migration**: `save-state` allows exporting cookies/storage for persistent logins.
+## Key Features
+
+- **Stateless Control**: Just point the CLI at a browser and go.
+- **Persistent Sessions**: Multiple browser instances can run simultaneously.
+- **Universal Primitives**: Click, type, scroll, and execute JS with one-liners.
+- **Vision-Ready**: `observe` command captures state + screenshots in a single call.
+- **Session Migration**: Export cookies/storage via `save-state` to maintain persistent logins.
+
+## Why 'buse'?
+
+Automating a browser usually means writing long, complex scripts or paying for expensive cloud services. buse changes that by letting you control a browser just like any other folder or file on your computer—using simple, one-word commands in your terminal.
+
+For example, open a browser and navigate to a website:
+
+```
+uvx --python 3.12 buse browser-1
+uvx --python 3.12 buse browser-1 navigate "https://example.com"
+uvx --python 3.12 buse browser-2 # open a second browser
+uvx --python 3.12 buse browser-2 search "latest tech news"
+```
 
 ## Installation
+
+With `uv`:
+
+```bash
+uvx --python 3.12 buse --help
+```
+
+With `pip`:
 
 ```bash
 pip install buse
 ```
 
-Or from source:
+From source:
 
 ```bash
 cd buse
@@ -30,7 +53,7 @@ uv pip install -e .
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.12
 - Google Chrome (local install)
 
 ## Usage Pattern
@@ -125,4 +148,10 @@ buse b1 wait 2
 - `OPENAI_API_KEY`: required for `extract`.
 - `BUSE_KEEP_SESSION`: set to `1` to keep the session open within a single process.
 
-Built with `browser-use` and `uv`.
+## References & Inspiration
+
+https://blog.google/innovation-and-ai/models-and-research/google-deepmind/gemini-computer-use-model/
+
+https://www.anthropic.com/news/3-5-models-and-computer-use
+
+https://docs.browser-use.com/introduction

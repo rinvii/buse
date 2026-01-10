@@ -1,9 +1,11 @@
 import json
+import os
 import platform
+import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, cast
 
 from pydantic import BaseModel
 
@@ -105,13 +107,20 @@ class SessionManager:
         if headless:
             args.append("--headless=new")
 
-        # Use start_new_session=True to detach properly
-        process = subprocess.Popen(
-            args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        sys_name = platform.system()
+        popen_kwargs: dict[str, object] = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if sys_name == "Windows":
+            creationflags = 0
+            creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+            popen_kwargs["creationflags"] = creationflags
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        process = subprocess.Popen(args, **popen_kwargs)  # type: ignore[call-overload]
 
         cdp_url = f"http://localhost:{port}"
 
@@ -141,9 +150,23 @@ class SessionManager:
         return session_info
 
     def _find_chrome_executable(self) -> str:
+        override = os.getenv("BUSE_CHROME_PATH") or os.getenv("CHROME_PATH")
+        if override and Path(override).exists():
+            return override
+
         sys_name = platform.system()
         if sys_name == "Darwin":
-            return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            candidates = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+            ]
+            for candidate in candidates:
+                if Path(candidate).exists():
+                    return candidate
+            raise RuntimeError(
+                "Chrome executable not found. Please install Google Chrome."
+            )
         elif sys_name == "Linux":
             for cmd in [
                 "google-chrome",
@@ -151,19 +174,27 @@ class SessionManager:
                 "chromium",
                 "google-chrome-stable",
             ]:
-                try:
-                    subprocess.run(
-                        [cmd, "--version"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    return cmd
-                except FileNotFoundError:
-                    continue
-        elif sys_name == "Windows":
-            return (
-                "C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe"
+                path = shutil.which(cmd)
+                if path:
+                    return path
+            raise RuntimeError(
+                "Chrome executable not found. Please install Google Chrome."
             )
+        elif sys_name == "Windows":
+            candidates = [
+                Path(os.environ.get("PROGRAMFILES", ""))
+                / "Google/Chrome/Application/chrome.exe",
+                Path(os.environ.get("PROGRAMFILES(X86)", ""))
+                / "Google/Chrome/Application/chrome.exe",
+                Path(os.environ.get("LOCALAPPDATA", ""))
+                / "Google/Chrome/Application/chrome.exe",
+            ]
+            for candidate in candidates:
+                if candidate and candidate.exists():
+                    return str(candidate)
+            path = shutil.which("chrome") or shutil.which("chrome.exe")
+            if path:
+                return path
 
         raise RuntimeError(
             "Chrome executable not found. Please ensure Google Chrome is installed."

@@ -137,8 +137,9 @@ def test_start_session_new(monkeypatch, tmp_path):
         def kill(self):
             captured["killed"] = True
 
-    def fake_popen(args, stdout=None, stderr=None, start_new_session=None):
+    def fake_popen(args, **kwargs):
         captured["args"] = args
+        captured["kwargs"] = kwargs
         return FakeProcess()
 
     monkeypatch.setattr(manager, "_find_chrome_executable", lambda: "/bin/chrome")
@@ -150,6 +151,30 @@ def test_start_session_new(monkeypatch, tmp_path):
     assert info.instance_id == "b1"
     assert info.cdp_url.endswith(":9223")
     assert "--headless=new" in captured["args"]
+
+
+def test_start_session_windows_creationflags(monkeypatch, tmp_path):
+    manager = make_manager(tmp_path)
+    captured = {}
+
+    class FakeProcess:
+        pid = 999
+
+        def kill(self):
+            captured["killed"] = True
+
+    def fake_popen(args, **kwargs):
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(manager, "_find_chrome_executable", lambda: "C:\\\\Chrome\\\\chrome.exe")
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(manager, "_cdp_ready", lambda url: True)
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+
+    manager.start_session("b1", headless=False)
+    assert "creationflags" in captured["kwargs"]
 
 
 def test_start_session_cdp_not_ready(monkeypatch, tmp_path):
@@ -178,32 +203,51 @@ def test_start_session_cdp_not_ready(monkeypatch, tmp_path):
 def test_find_chrome_executable(monkeypatch, tmp_path):
     manager = make_manager(tmp_path)
 
+    def fake_exists(path: Path):
+        return str(path).endswith("Google Chrome")
+
     monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(Path, "exists", fake_exists)
     assert manager._find_chrome_executable().endswith("Google Chrome")
 
-    monkeypatch.setattr("platform.system", lambda: "Linux")
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: None)
-    assert manager._find_chrome_executable() in {
-        "google-chrome",
-        "chromium-browser",
-        "chromium",
-        "google-chrome-stable",
-    }
-
-    def raise_fn(*args, **kwargs):
-        raise FileNotFoundError()
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(Path, "exists", lambda p: False)
+    with pytest.raises(RuntimeError):
+        manager._find_chrome_executable()
 
     monkeypatch.setattr("platform.system", lambda: "Linux")
-    monkeypatch.setattr("subprocess.run", raise_fn)
+    monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+    assert manager._find_chrome_executable().startswith("/usr/bin/")
+
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
     with pytest.raises(RuntimeError):
         manager._find_chrome_executable()
 
     monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr("shutil.which", lambda cmd: "C:\\\\Chrome\\\\chrome.exe")
+    monkeypatch.setattr(Path, "exists", lambda p: False)
     assert manager._find_chrome_executable().endswith("chrome.exe")
 
     monkeypatch.setattr("platform.system", lambda: "Other")
     with pytest.raises(RuntimeError):
         manager._find_chrome_executable()
+
+
+def test_find_chrome_override(monkeypatch, tmp_path):
+    manager = make_manager(tmp_path)
+    monkeypatch.setenv("BUSE_CHROME_PATH", "/tmp/chrome")
+    monkeypatch.setattr(Path, "exists", lambda p: str(p) == "/tmp/chrome")
+    assert manager._find_chrome_executable() == "/tmp/chrome"
+
+
+def test_find_chrome_windows_candidate(monkeypatch, tmp_path):
+    manager = make_manager(tmp_path)
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setenv("PROGRAMFILES", "C:\\\\Program Files")
+    monkeypatch.setattr(Path, "exists", lambda p: str(p).endswith("Google/Chrome/Application/chrome.exe"))
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    assert manager._find_chrome_executable().endswith("chrome.exe")
 
 
 def test_stop_session(monkeypatch, tmp_path):
