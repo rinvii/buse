@@ -18,6 +18,8 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - name: Build
         run: |
+          uv venv
+          . .venv/bin/activate
           uv pip install build
           python -m build
       - name: Upload release artifacts
