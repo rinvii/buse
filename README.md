@@ -147,6 +147,7 @@ buse b1 wait 2
 - `BUSE_EXTRACT_MODEL`: model name for `extract` (default: `gpt-4o-mini`).
 - `OPENAI_API_KEY`: required for `extract`.
 - `BUSE_KEEP_SESSION`: set to `1` to keep the session open within a single process.
+- `BUSE_REMOTE_ALLOW_ORIGINS`: override Chrome `--remote-allow-origins` (default: `http://localhost:<port>,http://127.0.0.1:<port>`).
 
 ## References & Inspiration
 

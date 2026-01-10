@@ -143,6 +143,7 @@ def test_start_session_new(monkeypatch, tmp_path):
         return FakeProcess()
 
     monkeypatch.setattr(manager, "_find_chrome_executable", lambda: "/bin/chrome")
+    monkeypatch.setattr(manager, "_find_free_port", lambda reserved_ports: 9223)
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: True)
     monkeypatch.setattr("time.sleep", lambda *_: None)
@@ -169,6 +170,7 @@ def test_start_session_windows_creationflags(monkeypatch, tmp_path):
 
     monkeypatch.setattr("platform.system", lambda: "Windows")
     monkeypatch.setattr(manager, "_find_chrome_executable", lambda: "C:\\\\Chrome\\\\chrome.exe")
+    monkeypatch.setattr(manager, "_find_free_port", lambda reserved_ports: 9222)
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: True)
     monkeypatch.setattr("time.sleep", lambda *_: None)
@@ -191,6 +193,7 @@ def test_start_session_cdp_not_ready(monkeypatch, tmp_path):
     proc = FakeProcess()
 
     monkeypatch.setattr(manager, "_find_chrome_executable", lambda: "/bin/chrome")
+    monkeypatch.setattr(manager, "_find_free_port", lambda reserved_ports: 9222)
     monkeypatch.setattr("subprocess.Popen", lambda *a, **k: proc)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: False)
     monkeypatch.setattr("time.sleep", lambda *_: None)

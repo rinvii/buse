@@ -179,12 +179,13 @@ async def test_execute_tool_exception_outputs_error(capsys, monkeypatch):
     original = browser_use.Controller
     try:
         browser_use.Controller = ErrorController  # type: ignore[assignment]
-        await main.execute_tool(
-            "b1",
-            "click",
-            {"index": 1},
-            needs_selector_map=False,
-        )
+        with pytest.raises(SystemExit):
+            await main.execute_tool(
+                "b1",
+                "click",
+                {"index": 1},
+                needs_selector_map=False,
+            )
     finally:
         browser_use.Controller = original
 
@@ -353,12 +354,13 @@ async def test_dropdown_options_fallback_error(capsys):
         "result": {"value": {"error": "Select element not found"}}
     }
 
-    await main.execute_tool(
-        "b1",
-        "dropdown_options",
-        {"element_id": "sel"},
-        needs_selector_map=True,
-    )
+    with pytest.raises(SystemExit):
+        await main.execute_tool(
+            "b1",
+            "dropdown_options",
+            {"element_id": "sel"},
+            needs_selector_map=True,
+        )
 
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
@@ -368,12 +370,13 @@ async def test_dropdown_options_fallback_error(capsys):
 async def test_select_dropdown_fallback_option_missing(capsys):
     FakeCDPSession.evaluate_result = {"result": {"value": {"error": "Option not found"}}}
 
-    await main.execute_tool(
-        "b1",
-        "select_dropdown",
-        {"element_id": "sel", "text": "Z"},
-        needs_selector_map=True,
-    )
+    with pytest.raises(SystemExit):
+        await main.execute_tool(
+            "b1",
+            "select_dropdown",
+            {"element_id": "sel", "text": "Z"},
+            needs_selector_map=True,
+        )
 
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
@@ -381,12 +384,13 @@ async def test_select_dropdown_fallback_option_missing(capsys):
 
 @pytest.mark.asyncio
 async def test_resolve_index_failure_outputs_error(capsys):
-    await main.execute_tool(
-        "b1",
-        "input",
-        {"element_id": "missing", "text": "hi"},
-        needs_selector_map=True,
-    )
+    with pytest.raises(SystemExit):
+        await main.execute_tool(
+            "b1",
+            "input",
+            {"element_id": "missing", "text": "hi"},
+            needs_selector_map=True,
+        )
 
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
@@ -484,12 +488,13 @@ async def test_execute_tool_augments_error(capsys):
     original = browser_use.Controller
     try:
         browser_use.Controller = ErrorController  # type: ignore[assignment]
-        await main.execute_tool(
-            "b1",
-            "click",
-            {"index": 1},
-            needs_selector_map=False,
-        )
+        with pytest.raises(SystemExit):
+            await main.execute_tool(
+                "b1",
+                "click",
+                {"index": 1},
+                needs_selector_map=False,
+            )
     finally:
         browser_use.Controller = original
 

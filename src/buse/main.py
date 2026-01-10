@@ -230,7 +230,7 @@ async def execute_tool(
                         )
                         if value.get("error"):
                             _output_error(action_name, params_for_hint, value["error"], profile=profile)
-                            return
+                            sys.exit(1)
                         lines = []
                         for opt in value.get("options", []):
                             suffix = " (selected)" if opt.get("selected") else ""
@@ -284,7 +284,7 @@ async def execute_tool(
                         )
                         if value.get("error"):
                             _output_error(action_name, params_for_hint, value["error"], profile=profile)
-                            return
+                            sys.exit(1)
                         msg = (
                             f'Selected option: {value.get("text")} (value: {value.get("value")})'
                         )
@@ -309,7 +309,7 @@ async def execute_tool(
                     f"{error_msg} (id={element_id}, class={element_class})",
                     profile=profile,
                 )
-                return
+                sys.exit(1)
             params["index"] = resolved_index
 
         controller = Controller()
@@ -343,12 +343,15 @@ async def execute_tool(
                 profile=profile if state.profile else None,
             )
         )
+        if error:
+            sys.exit(1)
 
         if action_name in {"navigate", "go_back", "search"} or label == "refresh":
             _selector_cache.pop(instance_id, None)
     except Exception as e:
         profile["total_ms"] = (time.perf_counter() - start_total) * 1000.0
         _output_error(label, params_for_hint, f"{label} failed: {type(e).__name__}: {e}", profile=profile)
+        sys.exit(1)
     finally:
         if not _should_keep_session():
             await _stop_cached_browser_session(instance_id)
@@ -876,10 +879,10 @@ def app():
         print(
             "buse: Stateless CLI for browser-use\n\n"
             "Usage:\n"
-            "  buse [--format json|text] [--profile] list           List active instances\n"
-            "  buse [--format json|text] [--profile] <id>           Start/initialize an instance\n"
-            "  buse [--format json|text] [--profile] <id> observe   Observe instance state\n"
-            "  buse [--format json|text] [--profile] <id> <command> Execute an action\n\n"
+            "  buse [--format json|toon] [--profile] list           List active instances\n"
+            "  buse [--format json|toon] [--profile] <id>           Start/initialize an instance\n"
+            "  buse [--format json|toon] [--profile] <id> observe   Observe instance state\n"
+            "  buse [--format json|toon] [--profile] <id> <command> Execute an action\n\n"
             "Instance commands:\n"
             "  observe            Observe current state\n"
             "  navigate           Navigate to URL\n"

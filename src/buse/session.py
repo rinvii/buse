@@ -2,6 +2,7 @@ import json
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -83,18 +84,19 @@ class SessionManager:
         user_data_dir = self.config_dir / "profiles" / instance_id
         user_data_dir.mkdir(parents=True, exist_ok=True)
 
-        port = 9222
         existing_ports = []
         for s in self.sessions.values():
             try:
                 existing_ports.append(int(s.cdp_url.split(":")[-1]))
             except Exception:
                 pass
-
-        while port in existing_ports:
-            port += 1
+        port = self._find_free_port(set(existing_ports))
 
         chrome_path = self._find_chrome_executable()
+
+        allow_origins = os.getenv("BUSE_REMOTE_ALLOW_ORIGINS")
+        if not allow_origins:
+            allow_origins = f"http://localhost:{port},http://127.0.0.1:{port}"
 
         args = [
             chrome_path,
@@ -102,7 +104,7 @@ class SessionManager:
             f"--user-data-dir={user_data_dir}",
             "--no-first-run",
             "--no-default-browser-check",
-            "--remote-allow-origins=*",
+            f"--remote-allow-origins={allow_origins}",
         ]
         if headless:
             args.append("--headless=new")
@@ -148,6 +150,32 @@ class SessionManager:
         self.sessions[instance_id] = session_info
         self._save_sessions()
         return session_info
+
+    def _find_free_port(
+        self, reserved_ports: set[int], start: int = 9222, max_tries: int = 100
+    ) -> int:
+        port = start
+        tries = 0
+        while tries < max_tries:
+            if port not in reserved_ports and self._is_port_free(port):
+                return port
+            port += 1
+            tries += 1
+        return self._find_ephemeral_port()
+
+    def _is_port_free(self, port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+            return True
+
+    def _find_ephemeral_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
 
     def _find_chrome_executable(self) -> str:
         override = os.getenv("BUSE_CHROME_PATH") or os.getenv("CHROME_PATH")
