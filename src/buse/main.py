@@ -160,6 +160,43 @@ _SEND_KEYS_ALIAS_LINES = [
     "pageup/pagedown -> PageUp/PageDown",
     "home/end -> Home/End",
 ]
+_SEND_KEYS_ALIAS_MAP = {
+    "ctrl": "Control",
+    "control": "Control",
+    "option": "Alt",
+    "alt": "Alt",
+    "cmd": "Meta",
+    "command": "Meta",
+    "meta": "Meta",
+    "shift": "Shift",
+    "enter": "Enter",
+    "return": "Enter",
+    "tab": "Tab",
+    "delete": "Delete",
+    "backspace": "Backspace",
+    "escape": "Escape",
+    "esc": "Escape",
+    "space": "Space",
+    "up": "ArrowUp",
+    "down": "ArrowDown",
+    "left": "ArrowLeft",
+    "right": "ArrowRight",
+    "pageup": "PageUp",
+    "pagedown": "PageDown",
+    "home": "Home",
+    "end": "End",
+}
+_SEND_KEYS_RESERVED = set(
+    _SEND_KEYS_NAV_KEYS
+    + _SEND_KEYS_MODIFIER_KEYS
+    + _SEND_KEYS_FUNCTION_KEYS
+    + _SEND_KEYS_NUMPAD_KEYS
+    + _SEND_KEYS_LOCK_KEYS
+    + _SEND_KEYS_PUNCTUATION_KEYS
+    + _SEND_KEYS_MEDIA_KEYS
+    + _SEND_KEYS_OTHER_KEYS
+)
+_SEND_KEYS_RESERVED_LOWER = {key.lower() for key in _SEND_KEYS_RESERVED}
 
 
 def _format_send_keys_help() -> str:
@@ -199,6 +236,18 @@ def _format_send_keys_help() -> str:
     lines.append("Text:")
     lines.append("  Any other string is typed as text (wrap spaces in quotes).")
     return "\n".join(lines)
+
+
+def _is_reserved_key_sequence(keys: str) -> bool:
+    if not isinstance(keys, str):
+        return False
+    cleaned = keys.strip()
+    if not cleaned:
+        return False
+    if "+" in cleaned:
+        return True
+    normalized = _SEND_KEYS_ALIAS_MAP.get(cleaned.lower(), cleaned)
+    return normalized.lower() in _SEND_KEYS_RESERVED_LOWER
 
 
 def _should_keep_session() -> bool:
@@ -668,6 +717,7 @@ async def _verify_close_tab(
 
 def _augment_error(action_name: str, params: dict, error: str) -> str:
     hint = None
+    message = error
     if action_name in {"click", "input", "dropdown_options", "select_dropdown", "hover"}:
         missing_index = params.get("index") is None
         missing_resolver = not (params.get("element_id") or params.get("element_class"))
@@ -679,13 +729,26 @@ def _augment_error(action_name: str, params: dict, error: str) -> str:
         elif missing_index and missing_resolver:
             hint = "Provide an index or use --id/--class (run observe to get indices)."
     if action_name == "click" and (
-        params.get("coordinate_x") is None or params.get("coordinate_y") is None
+        "coordinate_x" in params or "coordinate_y" in params
     ):
-        hint = "Provide both --x and --y for coordinate clicks."
+        if params.get("coordinate_x") is None or params.get("coordinate_y") is None:
+            hint = "Provide both --x and --y for coordinate clicks."
     if "Could not resolve element index" in error:
         hint = "Run `buse <id> observe` and use an index or pass the actual <select> --id/--class."
-    if "Element index" in error and "not available" in error:
-        hint = "The page likely changed. Run observe to refresh indices."
+    lowered_error = message.lower()
+    if "element index" in lowered_error and (
+        "not available" in lowered_error or "not found in browser state" in lowered_error
+    ):
+        message = (
+            message.replace(" - page may have changed.", "")
+            .replace(" Try refreshing browser state.", "")
+            .replace("Try refreshing browser state.", "")
+            .strip()
+        )
+        message = f"{message} in the current DOM"
+        hint = 'Run "buse <id> observe" to refresh indices.'
+    if "element with index" in lowered_error and "does not exist" in lowered_error:
+        hint = 'Run "buse <id> observe" to refresh indices.'
     if action_name in {"dropdown_options", "select_dropdown"}:
         if "Option not found" in error:
             hint = "Run dropdown-options and use the exact option text or value."
@@ -718,9 +781,37 @@ def _augment_error(action_name: str, params: dict, error: str) -> str:
         hint = "Use whole seconds (e.g., `buse b1 wait 2`)."
     if "Instance" in error and "not found" in error:
         hint = "Run `buse <id>` first to start an instance or use `buse list`."
+    if action_name == "send_keys" and hint is None:
+        has_focus_target = any(
+            params.get(key) is not None for key in ("index", "element_id", "element_class")
+        )
+        keys = params.get("keys")
+        if (
+            not has_focus_target
+            and isinstance(keys, str)
+            and keys
+            and not _is_reserved_key_sequence(keys)
+        ):
+            hint = (
+                "If you intended to type into a field, focus it with --index/--id/--class "
+                "(otherwise no focus is needed)."
+            )
     if hint:
-        return f"{error} Hint: {hint}"
-    return error
+        return f"{message}. {hint}"
+    return message
+
+
+def _coerce_index_error(message: Optional[str]) -> Optional[str]:
+    if not isinstance(message, str):
+        return None
+    lowered = message.lower()
+    if "element index" in lowered and (
+        "not available" in lowered or "not found in browser state" in lowered
+    ):
+        return message
+    if "element with index" in lowered and "does not exist" in lowered:
+        return message
+    return None
 
 
 def _output_error(action: str, params: dict, message: str, profile: Optional[dict[str, float]] = None):
@@ -902,8 +993,6 @@ async def execute_tool(
         )
         profile["action_ms"] = (time.perf_counter() - start_action) * 1000.0
         error = result.error
-        if error:
-            error = _augment_error(label, params_for_hint, error)
         if action_name == "close" and tab_id and not error:
             error = await _verify_close_tab(
                 browser_session,
@@ -919,6 +1008,13 @@ async def execute_tool(
             profile.update({f"nav_{k}": v for k, v in nav_timings.items()})
         profile["total_ms"] = (time.perf_counter() - start_total) * 1000.0
         message = result.extracted_content if not error else None
+        if not error:
+            coerced_error = _coerce_index_error(message)
+            if coerced_error:
+                error = coerced_error
+                message = None
+        if error:
+            error = _augment_error(label, params_for_hint, error)
         if action_name == "close" and tab_id and not error:
             message = f"Closed tab #{tab_id}"
         emitter.emit_result(

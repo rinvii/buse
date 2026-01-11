@@ -310,6 +310,41 @@ async def test_execute_tool_profile_output(capsys):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_coerces_index_message_to_error(capsys):
+    class IndexMessageRegistry(FakeRegistry):
+        async def execute_action(self, action_name, params, **kwargs):
+            return FakeActionResult(
+                extracted_content=(
+                    "Element index 1 not available - page may have changed. "
+                    "Try refreshing browser state."
+                )
+            )
+
+    class IndexMessageController(FakeController):
+        def __init__(self):
+            self.registry = IndexMessageRegistry()
+
+    import browser_use
+
+    original = browser_use.Controller
+    try:
+        browser_use.Controller = IndexMessageController  # type: ignore[assignment]
+        with pytest.raises(SystemExit):
+            await main.execute_tool(
+                "b1",
+                "click",
+                {"index": 1},
+                needs_selector_map=False,
+            )
+    finally:
+        browser_use.Controller = original
+
+    captured = json.loads(capsys.readouterr().out)
+    assert captured["success"] is False
+    assert "buse <id> observe" in captured["error"]
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_exception_outputs_error(capsys, monkeypatch):
     class ErrorRegistry(FakeRegistry):
         async def execute_action(self, action_name, params, **kwargs):
@@ -1066,7 +1101,7 @@ async def test_execute_tool_no_session(monkeypatch):
 
 def test_augment_error_hints():
     msg = main._augment_error("click", {}, "bad")
-    assert "Hint" in msg
+    assert "Provide an index" in msg
 
     msg = main._augment_error("click", {"coordinate_x": 1}, "bad")
     assert "both --x and --y" in msg
@@ -1130,10 +1165,48 @@ def test_augment_error_hints():
     assert "OPENAI_API_KEY" in msg
 
     msg = main._augment_error("click", {}, "Element index 2 not available")
-    assert "Run observe" in msg
+    assert "buse <id> observe" in msg
+
+    msg = main._augment_error("click", {}, "Element with index 3 does not exist")
+    assert "buse <id> observe" in msg
+
+    msg = main._augment_error(
+        "click",
+        {},
+        "Element index 4 not available - page may have changed. Try refreshing browser state.",
+    )
+    assert "Try refreshing browser state" not in msg
 
     msg = main._augment_error("input", {}, "Could not resolve element index")
     assert "observe" in msg
+
+    msg = main._augment_error("send_keys", {"keys": "Hello"}, "send failed")
+    assert "--index/--id/--class" in msg
+
+    msg = main._augment_error("send_keys", {"keys": "Enter"}, "send failed")
+    assert "--index/--id/--class" not in msg
+
+    msg = main._augment_error("send_keys", {"keys": "Control+L"}, "send failed")
+    assert "--index/--id/--class" not in msg
+
+    msg = main._augment_error("send_keys", {"keys": "Hello", "index": 1}, "send failed")
+    assert "--index/--id/--class" not in msg
+
+
+def test_coerce_index_error_variants():
+    assert main._coerce_index_error(None) is None
+    msg = "Element with index 9 does not exist"
+    assert main._coerce_index_error(msg) == msg
+
+
+def test_is_reserved_key_sequence():
+    assert main._is_reserved_key_sequence(None) is False
+    assert main._is_reserved_key_sequence("Enter") is True
+    assert main._is_reserved_key_sequence("Control+L") is True
+    assert main._is_reserved_key_sequence("space") is True
+    assert main._is_reserved_key_sequence("F13") is True
+    assert main._is_reserved_key_sequence("Hello") is False
+    assert main._is_reserved_key_sequence(" ") is False
 
 
 @pytest.mark.asyncio

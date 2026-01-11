@@ -80,6 +80,14 @@ uv pip install -e .
 | `observe` | Get minified DOM (use `--screenshot` to include an image) | `buse b1 observe --screenshot`       |
 | `extract` | Use LLM to extract data (set `BUSE_EXTRACT_MODEL`)        | `buse b1 extract "get product info"` |
 
+#### observe notes
+
+`observe` returns a minified DOM snapshot with element indices usable by actions (click/input/hover/...) like `[12]`.
+Those indices are ephemeral: they're only valid for the current page state and may change
+after any action (click, input, send-keys, navigate, refresh).
+If an index is stale or fails, run `buse <id> observe` to refresh indices. If you need
+stability across steps, use `--id` or `--class` instead of indices.
+
 ### 3. Navigation & Interaction
 
 | Command            | Description                                                                                         | Example                                  |
