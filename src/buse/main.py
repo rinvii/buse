@@ -31,7 +31,174 @@ _browser_sessions = {}
 _file_systems = {}
 _controllers = {}
 _selector_cache = {}
-_SELECTOR_CACHE_TTL_SECONDS = 2.0
+
+
+def _get_selector_cache_ttl_seconds() -> float:
+    raw = os.getenv("BUSE_SELECTOR_CACHE_TTL", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        ttl = float(raw)
+    except ValueError:
+        return 0.0
+    return ttl if ttl > 0 else 0.0
+_SEND_KEYS_NAV_KEYS = [
+    "Backspace",
+    "Tab",
+    "Enter",
+    "Escape",
+    "Space",
+    "PageUp",
+    "PageDown",
+    "Home",
+    "End",
+    "ArrowLeft",
+    "ArrowUp",
+    "ArrowRight",
+    "ArrowDown",
+    "Insert",
+    "Delete",
+]
+_SEND_KEYS_MODIFIER_KEYS = [
+    "Shift",
+    "ShiftLeft",
+    "ShiftRight",
+    "Control",
+    "ControlLeft",
+    "ControlRight",
+    "Alt",
+    "AltLeft",
+    "AltRight",
+    "Meta",
+    "MetaLeft",
+    "MetaRight",
+]
+_SEND_KEYS_FUNCTION_KEYS = [f"F{num}" for num in range(1, 25)]
+_SEND_KEYS_NUMPAD_KEYS = (
+    ["NumLock"]
+    + [f"Numpad{num}" for num in range(10)]
+    + [
+        "NumpadMultiply",
+        "NumpadAdd",
+        "NumpadSubtract",
+        "NumpadDecimal",
+        "NumpadDivide",
+    ]
+)
+_SEND_KEYS_LOCK_KEYS = ["CapsLock", "ScrollLock"]
+_SEND_KEYS_PUNCTUATION_KEYS = [
+    "Semicolon",
+    "Equal",
+    "Comma",
+    "Minus",
+    "Period",
+    "Slash",
+    "Backquote",
+    "BracketLeft",
+    "Backslash",
+    "BracketRight",
+    "Quote",
+]
+_SEND_KEYS_MEDIA_KEYS = [
+    "AudioVolumeMute",
+    "AudioVolumeDown",
+    "AudioVolumeUp",
+    "MediaTrackNext",
+    "MediaTrackPrevious",
+    "MediaStop",
+    "MediaPlayPause",
+    "BrowserBack",
+    "BrowserForward",
+    "BrowserRefresh",
+    "BrowserStop",
+    "BrowserSearch",
+    "BrowserFavorites",
+    "BrowserHome",
+]
+_SEND_KEYS_OTHER_KEYS = [
+    "Clear",
+    "Pause",
+    "Select",
+    "Print",
+    "Execute",
+    "PrintScreen",
+    "Help",
+    "ContextMenu",
+]
+_SEND_KEYS_SOLO_KEYS = (
+    [
+        "Enter",
+        "Tab",
+        "Delete",
+        "Backspace",
+        "Escape",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "PageUp",
+        "PageDown",
+        "Home",
+        "End",
+        "Control",
+        "Alt",
+        "Meta",
+        "Shift",
+    ]
+    + [f"F{num}" for num in range(1, 13)]
+)
+_SEND_KEYS_ALIAS_LINES = [
+    "ctrl/control -> Control",
+    "option -> Alt",
+    "cmd/command/meta -> Meta",
+    "esc/escape -> Escape",
+    "return -> Enter",
+    "tab -> Tab",
+    "delete/backspace -> Delete/Backspace",
+    "space -> \" \"",
+    "up/down/left/right -> ArrowUp/ArrowDown/ArrowLeft/ArrowRight",
+    "pageup/pagedown -> PageUp/PageDown",
+    "home/end -> Home/End",
+]
+
+
+def _format_send_keys_help() -> str:
+    sections = [
+        ("Navigation", _SEND_KEYS_NAV_KEYS),
+        ("Modifiers", _SEND_KEYS_MODIFIER_KEYS),
+        ("Function", _SEND_KEYS_FUNCTION_KEYS),
+        ("Numpad", _SEND_KEYS_NUMPAD_KEYS),
+        ("Locks", _SEND_KEYS_LOCK_KEYS),
+        ("Punctuation", _SEND_KEYS_PUNCTUATION_KEYS),
+        ("Media/Browser", _SEND_KEYS_MEDIA_KEYS),
+        ("Other", _SEND_KEYS_OTHER_KEYS),
+    ]
+    lines = ["Special keys (sent as key events when used alone):"]
+    lines.append(f"  {', '.join(_SEND_KEYS_SOLO_KEYS)}")
+    lines.append(
+        "  Everything else is typed as text unless used in a combo."
+    )
+    lines.append("")
+    lines.append("Named keys (case-sensitive):")
+    for label, keys in sections:
+        lines.append(f"  {label}: {', '.join(keys)}")
+    lines.append("  Letters/digits: A-Z, 0-9 (single characters).")
+    lines.append(
+        "  Punctuation literals also work: ; = , - . / ` [ \\ ] ' and space."
+    )
+    lines.append("")
+    lines.append("Aliases (case-insensitive):")
+    for alias_line in _SEND_KEYS_ALIAS_LINES:
+        lines.append(f"  {alias_line}")
+    lines.append("")
+    lines.append("Combos:")
+    lines.append(
+        "  Use '+' to combine modifiers with a key, e.g. Control+L, Shift+Tab, Alt+ArrowLeft."
+    )
+    lines.append("")
+    lines.append("Text:")
+    lines.append("  Any other string is typed as text (wrap spaces in quotes).")
+    return "\n".join(lines)
 
 
 def _should_keep_session() -> bool:
@@ -69,7 +236,8 @@ async def _get_browser_session(instance_id: str, session_info):
 async def _ensure_selector_map(browser_session, instance_id: str, force: bool = False) -> None:
     now = time.time()
     last = _selector_cache.get(instance_id, 0.0)
-    if not force and now - last < _SELECTOR_CACHE_TTL_SECONDS:
+    ttl_seconds = _get_selector_cache_ttl_seconds()
+    if not force and ttl_seconds > 0 and now - last < ttl_seconds:
         return
     await browser_session.get_browser_state_summary(
         include_screenshot=False, cached=False
@@ -108,6 +276,65 @@ async def _dispatch_hover(browser_session, hover_index: int) -> None:
         params={"type": "mouseMoved", "x": x, "y": y, "buttons": 0},
         session_id=cdp_session.session_id,
     )
+
+
+async def _dispatch_focus_click(browser_session, element) -> None:
+    if element is None or element.absolute_position is None:
+        raise ValueError("Could not resolve element position for focus")
+    bounds = element.absolute_position
+    x = bounds.x + (bounds.width or 0) / 2
+    y = bounds.y + (bounds.height or 0) / 2
+    cdp_session = await browser_session.get_or_create_cdp_session()
+    await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+        params={
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1,
+        },
+        session_id=cdp_session.session_id,
+    )
+    await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+        params={
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1,
+        },
+        session_id=cdp_session.session_id,
+    )
+
+
+async def _focus_element(
+    browser_session,
+    instance_id: str,
+    index: int,
+    profiler: "Profiler",
+) -> Optional[str]:
+    start_focus = time.perf_counter()
+    try:
+        await _ensure_selector_map(browser_session, instance_id)
+        selector_map = await browser_session.get_selector_map()
+        element = selector_map.get(index)
+        if element is None:
+            return f"Element index {index} not available"
+        cdp_session = await browser_session.get_or_create_cdp_session()
+        try:
+            await cdp_session.cdp_client.send.DOM.focus(
+                params={"backendNodeId": element.backend_node_id},
+                session_id=cdp_session.session_id,
+            )
+            return None
+        except Exception:
+            try:
+                await _dispatch_focus_click(browser_session, element)
+                return None
+            except Exception as exc:
+                return str(exc) or f"Failed to focus element index {index}"
+    finally:
+        profiler.mark("focus_ms", start_focus)
 
 
 class Profiler:
@@ -625,6 +852,18 @@ async def execute_tool(
                 raise ResultEmitter.EarlyExit()
             return
 
+        if action_name == "send_keys":
+            focus_index = params.pop("index", None)
+            if focus_index is not None:
+                focus_error = await _focus_element(
+                    browser_session,
+                    instance_id,
+                    focus_index,
+                    profiler,
+                )
+                if focus_error:
+                    emitter.fail(action_name, focus_error)
+
         controller = _controllers.get(instance_id)
         profile["controller_cached"] = 1.0 if controller is not None else 0.0
         if controller is None:
@@ -933,17 +1172,51 @@ def upload_file(
 
 @instance_app.command(
     help="Send keys to the browser.",
-    epilog="Example: buse b1 send-keys \"Enter\"",
+    epilog="Examples: buse b1 send-keys \"Enter\" | buse b1 send-keys \"Control+L\" | buse b1 send-keys --id search \"Hello\" | buse b1 send-keys --list-keys",
 )
 def send_keys(
     ctx: typer.Context,
-    keys: str = typer.Argument(..., help="Keys to send (e.g. Enter, Space, A)"),
+    keys: Optional[str] = typer.Argument(
+        None, help="Keys to send (e.g. Enter, Control+L, or text)."
+    ),
+    index: Optional[int] = typer.Option(
+        None, "--index", help="Optional element index to focus before sending keys."
+    ),
+    element_id: Optional[str] = typer.Option(
+        None, "--id", help="Optional element id to focus before sending keys."
+    ),
+    element_class: Optional[str] = typer.Option(
+        None, "--class", help="Optional element class to focus before sending keys."
+    ),
+    list_keys: bool = typer.Option(
+        False, "--list-keys", help="List supported key names and aliases, then exit."
+    ),
 ):
+    if list_keys is True:
+        typer.echo(_format_send_keys_help())
+        return
+    if not keys:
+        raise typer.BadParameter("Provide keys or use --list-keys.")
+    resolved_index = index if isinstance(index, int) else None
+    resolved_element_id = element_id if isinstance(element_id, str) else None
+    resolved_element_class = element_class if isinstance(element_class, str) else None
+    params = {"keys": keys}
+    if resolved_index is not None:
+        params["index"] = resolved_index
+    if resolved_element_id is not None:
+        params["element_id"] = resolved_element_id
+    if resolved_element_class is not None:
+        params["element_class"] = resolved_element_class
     asyncio.run(
         execute_tool(
             ctx.obj["instance_id"],
             "send_keys",
-            {"keys": keys},
+            params,
+            needs_selector_map=(
+                resolved_index is not None
+                or resolved_element_id is not None
+                or resolved_element_class is not None
+            ),
         )
     )
 

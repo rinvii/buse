@@ -82,24 +82,24 @@ uv pip install -e .
 
 ### 3. Navigation & Interaction
 
-| Command            | Description                                                                                       | Example                                  |
-| :----------------- | :------------------------------------------------------------------------------------------------ | :--------------------------------------- |
-| `navigate`         | Load a specific URL (supports `--new-tab`)                                                        | `buse b1 navigate "https://google.com"`  |
-| `new-tab`          | Open a URL in a new tab (alias for `navigate --new-tab`)                                          | `buse b1 new-tab "https://example.com"`  |
-| `search`           | Search the web (engines: `google`, `bing`, `duckduckgo`)                                          | `buse b1 search "query" --engine google` |
-| `click`            | Click by index, coordinates, or resolve by `--id`/`--class`                                       | `buse b1 click --x 500 --y 300`          |
-| `input`            | Type text into a field by index or `--id`/`--class` (use `--text` when no index)                  | `buse b1 input 12 "Hello"`               |
-| `upload-file`      | Upload a file to an element by index                                                              | `buse b1 upload-file 5 "./img.png"`      |
-| `send-keys`        | Send special keys (Enter, Escape, etc.)                                                           | `buse b1 send-keys "Enter"`              |
-| `find-text`        | Scroll to specific text on the page                                                               | `buse b1 find-text "Contact"`            |
-| `dropdown-options` | List options for a select element by index or `--id`/`--class`                                    | `buse b1 dropdown-options 12`            |
-| `select-dropdown`  | Select dropdown option by visible text and index or `--id`/`--class` (use `--text` when no index) | `buse b1 select-dropdown 12 "Option"`    |
-| `hover`            | Hover over an element by index or `--id`/`--class`                                                | `buse b1 hover 5`                        |
-| `scroll`           | Scroll page or a specific element                                                                 | `buse b1 scroll --down --pages 2`        |
-| `refresh`          | Reload the current page                                                                           | `buse b1 refresh`                        |
-| `go-back`          | Go back in browser history                                                                        | `buse b1 go-back`                        |
-| `wait`             | Wait for N seconds                                                                                | `buse b1 wait 2`                         |
-| `evaluate`         | Execute custom JavaScript code                                                                    | `buse b1 evaluate "alert('Hi')"`         |
+| Command            | Description                                                                                         | Example                                  |
+| :----------------- | :-------------------------------------------------------------------------------------------------- | :--------------------------------------- |
+| `navigate`         | Load a specific URL (supports `--new-tab`)                                                          | `buse b1 navigate "https://google.com"`  |
+| `new-tab`          | Open a URL in a new tab (alias for `navigate --new-tab`)                                            | `buse b1 new-tab "https://example.com"`  |
+| `search`           | Search the web (engines: `google`, `bing`, `duckduckgo`)                                            | `buse b1 search "query" --engine google` |
+| `click`            | Click by index, coordinates, or resolve by `--id`/`--class`                                         | `buse b1 click --x 500 --y 300`          |
+| `input`            | Type text into a field by index or `--id`/`--class` (use `--text` when no index)                    | `buse b1 input 12 "Hello"`               |
+| `upload-file`      | Upload a file to an element by index                                                                | `buse b1 upload-file 5 "./img.png"`      |
+| `send-keys`        | Send special keys or text (use `--list-keys` for names, optional focus with `--index/--id/--class`) | `buse b1 send-keys "Enter"`              |
+| `find-text`        | Scroll to specific text on the page                                                                 | `buse b1 find-text "Contact"`            |
+| `dropdown-options` | List options for a select element by index or `--id`/`--class`                                      | `buse b1 dropdown-options 12`            |
+| `select-dropdown`  | Select dropdown option by visible text and index or `--id`/`--class` (use `--text` when no index)   | `buse b1 select-dropdown 12 "Option"`    |
+| `hover`            | Hover over an element by index or `--id`/`--class`                                                  | `buse b1 hover 5`                        |
+| `scroll`           | Scroll page or a specific element                                                                   | `buse b1 scroll --down --pages 2`        |
+| `refresh`          | Reload the current page                                                                             | `buse b1 refresh`                        |
+| `go-back`          | Go back in browser history                                                                          | `buse b1 go-back`                        |
+| `wait`             | Wait for N seconds                                                                                  | `buse b1 wait 2`                         |
+| `evaluate`         | Execute custom JavaScript code                                                                      | `buse b1 evaluate "alert('Hi')"`         |
 
 ### 4. Advanced
 
@@ -137,6 +137,12 @@ buse b1 upload-file 5 "./image.png"
 # Send special keys
 buse b1 send-keys "Enter"
 
+# Send keys to a focused element
+buse b1 send-keys --id "search" "Hello"
+
+# List send-keys names
+buse b1 send-keys --list-keys
+
 # Find and scroll to text
 buse b1 find-text "Contact Us"
 
@@ -159,6 +165,7 @@ buse b1 wait 2
 - `BUSE_EXTRACT_MODEL`: model name for `extract` (default: `gpt-4o-mini`).
 - `OPENAI_API_KEY`: required for `extract`.
 - `BUSE_KEEP_SESSION`: set to `1` to keep the session open within a single process.
+- `BUSE_SELECTOR_CACHE_TTL`: selector-map cache TTL in seconds (default: `0`, disabled).
 - `BUSE_REMOTE_ALLOW_ORIGINS`: override Chrome `--remote-allow-origins` (default: `http://localhost:<port>,http://127.0.0.1:<port>`).
 
 ## References & Inspiration

@@ -17,6 +17,7 @@ class FakeRegistry:
     async def execute_action(self, action_name, params, **kwargs):
         FakeController.last_action = action_name
         FakeController.last_params = params
+        FakeController.last_kwargs = kwargs
         if action_name == "close" and params.get("tab_id"):
             tab_id = params["tab_id"]
             for tid in list(FakeBrowserSession.open_tabs):
@@ -29,6 +30,7 @@ class FakeRegistry:
 class FakeController:
     last_action = None
     last_params = None
+    last_kwargs = None
     coordinate_enabled = False
 
     def __init__(self):
@@ -48,9 +50,19 @@ class FakeInput:
         return {}
 
 
+class FakeDOM:
+    should_fail = False
+
+    async def focus(self, params, session_id=None):
+        if FakeDOM.should_fail:
+            raise RuntimeError("focus failed")
+        return {}
+
+
 class FakeSend:
     Runtime = FakeRuntime()
     Input = FakeInput()
+    DOM = FakeDOM()
 
 
 class FakeCDPClient:
@@ -79,6 +91,7 @@ class FakeElement:
         if bounds is _UNSET:
             bounds = FakeBounds()
         self.absolute_position = bounds
+        self.backend_node_id = 1
 
 
 class FakeBrowserSession:
@@ -141,6 +154,7 @@ class FakeBrowserSession:
 def reset_fakes(monkeypatch):
     FakeController.last_action = None
     FakeController.last_params = None
+    FakeController.last_kwargs = None
     FakeController.coordinate_enabled = False
     FakeBrowserSession.index_by_id = {}
     FakeBrowserSession.index_by_class = {}
@@ -152,6 +166,8 @@ def reset_fakes(monkeypatch):
     FakeBrowserSession.selector_map = {}
     FakeBrowserSession.open_tabs = []
     FakeCDPSession.evaluate_result = {"result": {"value": {}}}
+    FakeDOM.should_fail = False
+    monkeypatch.delenv("BUSE_SELECTOR_CACHE_TTL", raising=False)
     main._browser_sessions.clear()
     main._file_systems.clear()
     main._selector_cache.clear()
@@ -200,6 +216,78 @@ async def test_execute_tool_reuses_session(capsys):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_upload_file_passes_available_paths(capsys):
+    await main.execute_tool(
+        "b1",
+        "upload_file",
+        {"index": 1, "path": "/tmp/file.txt"},
+        needs_selector_map=False,
+    )
+    assert FakeController.last_kwargs is not None
+    assert FakeController.last_kwargs["available_file_paths"] == ["/tmp/file.txt"]
+    captured = json.loads(capsys.readouterr().out)
+    assert captured["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_send_keys_focus_by_index(capsys):
+    FakeBrowserSession.selector_map = {2: FakeElement()}
+    await main.execute_tool(
+        "b1",
+        "send_keys",
+        {"index": 2, "keys": "Enter"},
+        needs_selector_map=True,
+    )
+    assert FakeController.last_action == "send_keys"
+    assert FakeController.last_params == {"keys": "Enter"}
+    captured = json.loads(capsys.readouterr().out)
+    assert captured["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_send_keys_focus_fallback_click(capsys):
+    FakeDOM.should_fail = True
+    FakeBrowserSession.selector_map = {3: FakeElement()}
+    await main.execute_tool(
+        "b1",
+        "send_keys",
+        {"index": 3, "keys": "Hello"},
+        needs_selector_map=True,
+    )
+    captured = json.loads(capsys.readouterr().out)
+    assert captured["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_send_keys_focus_missing_index(capsys):
+    FakeBrowserSession.selector_map = {}
+    with pytest.raises(SystemExit):
+        await main.execute_tool(
+            "b1",
+            "send_keys",
+            {"index": 9, "keys": "A"},
+            needs_selector_map=True,
+        )
+    captured = json.loads(capsys.readouterr().out)
+    assert "Element index 9 not available" in captured["error"]
+
+
+@pytest.mark.asyncio
+async def test_send_keys_focus_no_position(capsys):
+    FakeDOM.should_fail = True
+    FakeBrowserSession.selector_map = {4: FakeElement(bounds=None)}
+    with pytest.raises(SystemExit):
+        await main.execute_tool(
+            "b1",
+            "send_keys",
+            {"index": 4, "keys": "A"},
+            needs_selector_map=True,
+        )
+    captured = json.loads(capsys.readouterr().out)
+    assert "Could not resolve element position for focus" in captured["error"]
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_profile_output(capsys):
     main.state.profile = True
     await main.execute_tool(
@@ -242,7 +330,8 @@ async def test_execute_tool_exception_outputs_error(capsys, monkeypatch):
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 @pytest.mark.asyncio
-async def test_selector_cache_ttl_skips_refresh():
+async def test_selector_cache_ttl_skips_refresh(monkeypatch):
+    monkeypatch.setenv("BUSE_SELECTOR_CACHE_TTL", "2")
     session_info = SimpleNamespace(cdp_url="http://localhost:0", user_data_dir="/tmp")
     browser_session, _ = await main._get_browser_session("b1", session_info)
     await main._ensure_selector_map(browser_session, "b1")
@@ -250,6 +339,11 @@ async def test_selector_cache_ttl_skips_refresh():
     assert FakeBrowserSession.state_calls == 1
     await main._ensure_selector_map(browser_session, "b1", force=True)
     assert FakeBrowserSession.state_calls == 2
+
+
+def test_selector_cache_ttl_invalid_value(monkeypatch):
+    monkeypatch.setenv("BUSE_SELECTOR_CACHE_TTL", "nope")
+    assert main._get_selector_cache_ttl_seconds() == 0.0
 
 
 @pytest.mark.asyncio

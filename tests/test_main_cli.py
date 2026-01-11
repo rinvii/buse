@@ -9,10 +9,11 @@ import buse.main as main
 
 
 @pytest.fixture(autouse=True)
-def reset_caches():
+def reset_caches(monkeypatch):
     main._browser_sessions.clear()
     main._file_systems.clear()
     main._selector_cache.clear()
+    monkeypatch.delenv("BUSE_SELECTOR_CACHE_TTL", raising=False)
     yield
 
 
@@ -179,6 +180,48 @@ def test_basic_commands(monkeypatch, tmp_path):
     assert calls[11][2]["path"] == str(f)
     assert calls[12][2]["keys"] == "Enter"
     assert calls[13][2]["text"] == "hello"
+
+
+def test_send_keys_list(monkeypatch, capsys):
+    calls = patch_execute_tool(monkeypatch)
+    ctx = DummyCtx()
+    main.send_keys(ctx, keys=None, list_keys=True)
+    out = capsys.readouterr().out
+    assert "Named keys" in out
+    assert "Navigation" in out
+    assert calls == []
+
+
+def test_send_keys_missing_keys():
+    ctx = DummyCtx()
+    with pytest.raises(typer.BadParameter):
+        main.send_keys(ctx, keys=None, list_keys=False)
+
+
+def test_send_keys_with_index(monkeypatch):
+    calls = patch_execute_tool(monkeypatch)
+    ctx = DummyCtx()
+    main.send_keys(ctx, "Enter", index=7, element_id=None, element_class=None)
+    assert calls[0][1] == "send_keys"
+    assert calls[0][2]["keys"] == "Enter"
+    assert calls[0][2]["index"] == 7
+    assert calls[0][3]["needs_selector_map"] is True
+
+
+def test_send_keys_with_id(monkeypatch):
+    calls = patch_execute_tool(monkeypatch)
+    ctx = DummyCtx()
+    main.send_keys(ctx, "Enter", index=None, element_id="field", element_class=None)
+    assert calls[0][2]["element_id"] == "field"
+    assert calls[0][3]["needs_selector_map"] is True
+
+
+def test_send_keys_with_class(monkeypatch):
+    calls = patch_execute_tool(monkeypatch)
+    ctx = DummyCtx()
+    main.send_keys(ctx, "Enter", index=None, element_id=None, element_class="field")
+    assert calls[0][2]["element_class"] == "field"
+    assert calls[0][3]["needs_selector_map"] is True
 
 
 def test_click_bad_params():
