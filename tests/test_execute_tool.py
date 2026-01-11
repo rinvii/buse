@@ -121,12 +121,18 @@ class FakeBrowserSession:
         return None
 
     async def get_index_by_id(self, element_id):
-        if FakeBrowserSession.refreshed and element_id in FakeBrowserSession.refreshed_index_by_id:
+        if (
+            FakeBrowserSession.refreshed
+            and element_id in FakeBrowserSession.refreshed_index_by_id
+        ):
             return FakeBrowserSession.refreshed_index_by_id[element_id]
         return FakeBrowserSession.index_by_id.get(element_id)
 
     async def get_index_by_class(self, class_name):
-        if FakeBrowserSession.refreshed and class_name in FakeBrowserSession.refreshed_index_by_class:
+        if (
+            FakeBrowserSession.refreshed
+            and class_name in FakeBrowserSession.refreshed_index_by_class
+        ):
             return FakeBrowserSession.refreshed_index_by_class[class_name]
         return FakeBrowserSession.index_by_class.get(class_name)
 
@@ -190,6 +196,7 @@ def reset_fakes(monkeypatch):
 @pytest.mark.asyncio
 async def test_execute_tool_reuses_session(capsys):
     import os
+
     os.environ["BUSE_KEEP_SESSION"] = "1"
     await main.execute_tool(
         "b1",
@@ -329,6 +336,8 @@ async def test_execute_tool_exception_outputs_error(capsys, monkeypatch):
 
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
+
+
 @pytest.mark.asyncio
 async def test_selector_cache_ttl_skips_refresh(monkeypatch):
     monkeypatch.setenv("BUSE_SELECTOR_CACHE_TTL", "2")
@@ -476,9 +485,7 @@ async def test_dropdown_options_fallback_by_class(capsys):
 
 @pytest.mark.asyncio
 async def test_select_dropdown_fallback_by_id(capsys):
-    FakeCDPSession.evaluate_result = {
-        "result": {"value": {"text": "B", "value": "B"}}
-    }
+    FakeCDPSession.evaluate_result = {"result": {"value": {"text": "B", "value": "B"}}}
 
     await main.execute_tool(
         "b1",
@@ -512,7 +519,9 @@ async def test_dropdown_options_fallback_error(capsys):
 
 @pytest.mark.asyncio
 async def test_select_dropdown_fallback_option_missing(capsys):
-    FakeCDPSession.evaluate_result = {"result": {"value": {"error": "Option not found"}}}
+    FakeCDPSession.evaluate_result = {
+        "result": {"value": {"error": "Option not found"}}
+    }
 
     with pytest.raises(SystemExit):
         await main.execute_tool(
@@ -1071,10 +1080,14 @@ def test_augment_error_hints():
     msg = main._augment_error("navigate", {"url": "x"}, "bad")
     assert msg == "bad"
 
-    msg = main._augment_error("select_dropdown", {"element_id": "x"}, "Option not found")
+    msg = main._augment_error(
+        "select_dropdown", {"element_id": "x"}, "Option not found"
+    )
     assert "dropdown-options" in msg
 
-    msg = main._augment_error("dropdown_options", {"element_id": "x"}, "Select element not found")
+    msg = main._augment_error(
+        "dropdown_options", {"element_id": "x"}, "Select element not found"
+    )
     assert "select" in msg
 
     msg = main._augment_error("switch-tab", {"tab_id": "A"}, "bad")
