@@ -89,6 +89,9 @@ uv pip install -e .
 | `search`           | Search the web (engines: `google`, `bing`, `duckduckgo`)                                          | `buse b1 search "query" --engine google` |
 | `click`            | Click by index, coordinates, or resolve by `--id`/`--class`                                       | `buse b1 click --x 500 --y 300`          |
 | `input`            | Type text into a field by index or `--id`/`--class` (use `--text` when no index)                  | `buse b1 input 12 "Hello"`               |
+| `upload-file`      | Upload a file to an element by index                                                              | `buse b1 upload-file 5 "./img.png"`      |
+| `send-keys`        | Send special keys (Enter, Escape, etc.)                                                           | `buse b1 send-keys "Enter"`              |
+| `find-text`        | Scroll to specific text on the page                                                               | `buse b1 find-text "Contact"`            |
 | `dropdown-options` | List options for a select element by index or `--id`/`--class`                                    | `buse b1 dropdown-options 12`            |
 | `select-dropdown`  | Select dropdown option by visible text and index or `--id`/`--class` (use `--text` when no index) | `buse b1 select-dropdown 12 "Option"`    |
 | `hover`            | Hover over an element by index or `--id`/`--class`                                                | `buse b1 hover 5`                        |
@@ -127,6 +130,15 @@ buse b1 click --class "cta-primary"
 
 # Input by id with explicit --text
 buse b1 input --id "email" --text "test@example.com"
+
+# Upload a file
+buse b1 upload-file 5 "./image.png"
+
+# Send special keys
+buse b1 send-keys "Enter"
+
+# Find and scroll to text
+buse b1 find-text "Contact Us"
 
 # Get dropdown options and select by text
 buse b1 dropdown-options --id "country"

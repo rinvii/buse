@@ -90,7 +90,11 @@ def test_observe_no_session_outputs_error(monkeypatch, capsys):
 
 
 def test_observe_with_screenshot(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(main.session_manager, "get_session", lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)))
+    monkeypatch.setattr(
+        main.session_manager,
+        "get_session",
+        lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)),
+    )
     monkeypatch.setattr("browser_use.browser.BrowserSession", FakeBrowserSession)
     main.observe(DummyCtx(), screenshot=True)
     out = json.loads(capsys.readouterr().out)
@@ -99,10 +103,18 @@ def test_observe_with_screenshot(monkeypatch, tmp_path, capsys):
 
 def test_observe_without_dom_state(monkeypatch, tmp_path, capsys):
     class NoDomSession(FakeBrowserSession):
-        async def get_browser_state_summary(self, include_screenshot=False, cached=False):
-            return SimpleNamespace(url="http://x", title="Title", screenshot=None, dom_state=None)
+        async def get_browser_state_summary(
+            self, include_screenshot=False, cached=False
+        ):
+            return SimpleNamespace(
+                url="http://x", title="Title", screenshot=None, dom_state=None
+            )
 
-    monkeypatch.setattr(main.session_manager, "get_session", lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)))
+    monkeypatch.setattr(
+        main.session_manager,
+        "get_session",
+        lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)),
+    )
     monkeypatch.setattr("browser_use.browser.BrowserSession", NoDomSession)
     main.observe(DummyCtx(), screenshot=False)
     out = json.loads(capsys.readouterr().out)
@@ -110,7 +122,11 @@ def test_observe_without_dom_state(monkeypatch, tmp_path, capsys):
 
 
 def test_observe_profile(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(main.session_manager, "get_session", lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)))
+    monkeypatch.setattr(
+        main.session_manager,
+        "get_session",
+        lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)),
+    )
     monkeypatch.setattr("browser_use.browser.BrowserSession", FakeBrowserSession)
     main.state.profile = True
     main.observe(DummyCtx(), screenshot=False)
@@ -119,7 +135,7 @@ def test_observe_profile(monkeypatch, tmp_path, capsys):
     main.state.profile = False
 
 
-def test_basic_commands(monkeypatch):
+def test_basic_commands(monkeypatch, tmp_path):
     calls = patch_execute_tool(monkeypatch)
     ctx = DummyCtx()
     main.navigate(ctx, "http://x", new_tab=True)
@@ -134,6 +150,12 @@ def test_basic_commands(monkeypatch):
     main.close_tab(ctx, "ABCD")
     main.evaluate(ctx, "1+1")
 
+    f = tmp_path / "file.txt"
+    f.write_text("content")
+    main.upload_file(ctx, index=1, path=str(f))
+    main.send_keys(ctx, "Enter")
+    main.find_text(ctx, "hello")
+
     assert [c[1] for c in calls] == [
         "navigate",
         "navigate",
@@ -146,7 +168,17 @@ def test_basic_commands(monkeypatch):
         "switch",
         "close",
         "evaluate",
+        "upload_file",
+        "send_keys",
+        "find_text",
     ]
+
+    import os
+
+    assert calls[11][2]["index"] == 1
+    assert calls[11][2]["path"] == str(f)
+    assert calls[12][2]["keys"] == "Enter"
+    assert calls[13][2]["text"] == "hello"
 
 
 def test_click_bad_params():
@@ -160,31 +192,59 @@ def test_click_bad_params():
 def test_input_text_variants(monkeypatch):
     calls = patch_execute_tool(monkeypatch)
     ctx = DummyCtx()
-    main.input(ctx, index=2, text="hi", text_opt=None, element_id=None, element_class=None)
-    main.input(ctx, index=None, text=None, text_opt="opt", element_id="id", element_class="cls")
+    main.input(
+        ctx, index=2, text="hi", text_opt=None, element_id=None, element_class=None
+    )
+    main.input(
+        ctx, index=None, text=None, text_opt="opt", element_id="id", element_class="cls"
+    )
     assert calls[0][1] == "input"
     assert calls[1][2]["text"] == "opt"
 
     with pytest.raises(typer.BadParameter):
-        main.input(ctx, index=None, text=None, text_opt=None, element_id=None, element_class=None)
+        main.input(
+            ctx,
+            index=None,
+            text=None,
+            text_opt=None,
+            element_id=None,
+            element_class=None,
+        )
 
 
 def test_input_missing_selector():
     ctx = DummyCtx()
     with pytest.raises(typer.BadParameter):
-        main.input(ctx, index=None, text="hi", text_opt=None, element_id=None, element_class=None)
+        main.input(
+            ctx,
+            index=None,
+            text="hi",
+            text_opt=None,
+            element_id=None,
+            element_class=None,
+        )
 
 
 def test_dropdown_commands(monkeypatch):
     calls = patch_execute_tool(monkeypatch)
     ctx = DummyCtx()
     main.dropdown_options(ctx, index=1, element_id="id", element_class="cls")
-    main.select_dropdown(ctx, index=1, text="A", text_opt=None, element_id=None, element_class="cls")
-    main.select_dropdown(ctx, index=None, text=None, text_opt="B", element_id="id", element_class="cls")
-    assert [c[1] for c in calls] == ["dropdown_options", "select_dropdown", "select_dropdown"]
+    main.select_dropdown(
+        ctx, index=1, text="A", text_opt=None, element_id=None, element_class="cls"
+    )
+    main.select_dropdown(
+        ctx, index=None, text=None, text_opt="B", element_id="id", element_class="cls"
+    )
+    assert [c[1] for c in calls] == [
+        "dropdown_options",
+        "select_dropdown",
+        "select_dropdown",
+    ]
 
     with pytest.raises(typer.BadParameter):
-        main.select_dropdown(ctx, index=1, text=None, text_opt=None, element_id=None, element_class=None)
+        main.select_dropdown(
+            ctx, index=1, text=None, text_opt=None, element_id=None, element_class=None
+        )
 
 
 def test_dropdown_options_missing_selector():
@@ -196,7 +256,14 @@ def test_dropdown_options_missing_selector():
 def test_select_dropdown_missing_selector():
     ctx = DummyCtx()
     with pytest.raises(typer.BadParameter):
-        main.select_dropdown(ctx, index=None, text="A", text_opt=None, element_id=None, element_class=None)
+        main.select_dropdown(
+            ctx,
+            index=None,
+            text="A",
+            text_opt=None,
+            element_id=None,
+            element_class=None,
+        )
 
 
 def test_hover(monkeypatch):
@@ -230,7 +297,11 @@ def test_scroll_invalid_pages():
 
 
 def test_save_state(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(main.session_manager, "get_session", lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)))
+    monkeypatch.setattr(
+        main.session_manager,
+        "get_session",
+        lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)),
+    )
     monkeypatch.setattr("browser_use.browser.BrowserSession", FakeBrowserSession)
     main.save_state(DummyCtx(), "state.json")
     out = json.loads(capsys.readouterr().out)
@@ -258,7 +329,9 @@ def test_extract(monkeypatch):
 
 
 def test_stop(monkeypatch, capsys):
-    monkeypatch.setattr(main.session_manager, "get_session", lambda _: SimpleNamespace())
+    monkeypatch.setattr(
+        main.session_manager, "get_session", lambda _: SimpleNamespace()
+    )
     monkeypatch.setattr(main.session_manager, "stop_session", lambda _: None)
     main.stop(DummyCtx("b1"))
     out = json.loads(capsys.readouterr().out)
@@ -353,7 +426,9 @@ def test_app_instance_start(monkeypatch, capsys):
 
 
 def test_app_instance_existing(monkeypatch, capsys):
-    monkeypatch.setattr(main.session_manager, "get_session", lambda _: SimpleNamespace())
+    monkeypatch.setattr(
+        main.session_manager, "get_session", lambda _: SimpleNamespace()
+    )
     monkeypatch.setattr(main.sys, "argv", ["buse", "b1"])
     main.app()
     out = json.loads(capsys.readouterr().out)
@@ -410,3 +485,14 @@ def test_app_wait_invalid_negative_not_rewritten(monkeypatch):
     monkeypatch.setattr(main.sys, "argv", ["buse", "b1", "wait", "-x"])
     main.app()
     assert seen["args"] == ["wait", "-x"]
+
+
+def test_upload_file_validation(tmp_path):
+    ctx = DummyCtx()
+
+    with pytest.raises(typer.BadParameter, match="Path is not a file"):
+        main.upload_file(ctx, index=1, path=str(tmp_path))
+
+    non_existent = tmp_path / "fake.txt"
+    with pytest.raises(typer.BadParameter, match="File not found"):
+        main.upload_file(ctx, index=1, path=str(non_existent))

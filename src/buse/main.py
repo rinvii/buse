@@ -652,6 +652,8 @@ async def execute_tool(
             tab_present_before = _tab_present(tabs_snapshot, tab_id)
             profile["tab_present_before"] = 1.0 if tab_present_before else 0.0
         start_action = time.perf_counter()
+        if action_name == "upload_file" and "path" in params:
+            extra_kwargs["available_file_paths"] = [params["path"]]
         result = await controller.registry.execute_action(
             action_name,
             params,
@@ -898,6 +900,67 @@ def input(
             "input",
             params,
             needs_selector_map=(index is not None),
+        )
+    )
+
+
+@instance_app.command(
+    help="Upload a file to an element.",
+    epilog="Example: buse b1 upload-file 5 ./image.png",
+)
+def upload_file(
+    ctx: typer.Context,
+    index: int = typer.Argument(..., help="Index of the file input element"),
+    path: str = typer.Argument(..., help="Path to the file"),
+):
+    import os
+
+    full_path = os.path.abspath(path)
+    if not os.path.exists(full_path):
+        raise typer.BadParameter(f"File not found: {path}")
+    if not os.path.isfile(full_path):
+        raise typer.BadParameter(f"Path is not a file: {path}")
+
+    asyncio.run(
+        execute_tool(
+            ctx.obj["instance_id"],
+            "upload_file",
+            {"index": index, "path": full_path},
+            needs_selector_map=True,
+        )
+    )
+
+
+@instance_app.command(
+    help="Send keys to the browser.",
+    epilog="Example: buse b1 send-keys \"Enter\"",
+)
+def send_keys(
+    ctx: typer.Context,
+    keys: str = typer.Argument(..., help="Keys to send (e.g. Enter, Space, A)"),
+):
+    asyncio.run(
+        execute_tool(
+            ctx.obj["instance_id"],
+            "send_keys",
+            {"keys": keys},
+        )
+    )
+
+
+@instance_app.command(
+    help="Scroll to text on the page.",
+    epilog="Example: buse b1 find-text \"Contact Us\"",
+)
+def find_text(
+    ctx: typer.Context,
+    text: str = typer.Argument(..., help="Text to find and scroll to"),
+):
+    asyncio.run(
+        execute_tool(
+            ctx.obj["instance_id"],
+            "find_text",
+            {"text": text},
         )
     )
 
@@ -1245,6 +1308,9 @@ def _run(args: list[str]) -> None:
             "  search             Search the web (duckduckgo, google, bing)\n"
             "  click              Click by index OR coordinates\n"
             "  input              Input text into form fields\n"
+            "  upload-file        Upload a file to an element\n"
+            "  send-keys          Send keys to the browser\n"
+            "  find-text          Scroll to text on the page\n"
             "  dropdown-options   Get dropdown options for a select element\n"
             "  select-dropdown    Select a dropdown option by visible text\n"
             "  go-back            Go back in browser history\n"
