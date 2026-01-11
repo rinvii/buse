@@ -205,7 +205,10 @@ def test_hover(monkeypatch):
     main.hover(ctx, index=5, element_id=None, element_class=None)
     main.hover(ctx, index=None, element_id="x", element_class=None)
     main.hover(ctx, index=None, element_id=None, element_class="c")
-    assert calls[0][1] == "evaluate"
+    assert [c[1] for c in calls] == ["hover", "hover", "hover"]
+    assert calls[0][2] == {"index": 5}
+    assert calls[1][2] == {"element_id": "x"}
+    assert calls[2][2] == {"element_class": "c"}
 
     with pytest.raises(typer.BadParameter):
         main.hover(ctx, index=None, element_id=None, element_class=None)
@@ -307,29 +310,57 @@ def test_app_paths(monkeypatch, capsys):
     assert main.state.format == main.OutputFormat.json
     capsys.readouterr()
 
-    monkeypatch.setattr(main.sys, "argv", ["buse", "--profile", "list"])
+
+def test_run_cli_success(monkeypatch):
+    monkeypatch.setattr(main.session_manager, "list_sessions", lambda: {"a": 1})
+    code, out = main.run_cli(["list"])
+    assert code == 0
+    assert json.loads(out) == {"a": 1}
+
+
+def test_run_cli_system_exit(monkeypatch):
+    monkeypatch.setattr(main, "_run", lambda *_: (_ for _ in ()).throw(SystemExit(2)))
+    code, out = main.run_cli(["anything"])
+    assert code == 2
+    assert out == ""
+    monkeypatch.setattr(main, "_run", main._run)
+
+
+def test_app_profile_flags(monkeypatch, capsys):
+    monkeypatch.setattr(main.session_manager, "get_session", lambda _: None)
+    monkeypatch.setattr(main.session_manager, "start_session", lambda _: None)
+
+    monkeypatch.setattr(main.sys, "argv", ["buse", "--profile"])
     main.app()
     assert main.state.profile is True
     capsys.readouterr()
     main.state.profile = False
 
-    monkeypatch.setattr(main.sys, "argv", ["buse", "-p", "list"])
+    monkeypatch.setattr(main.sys, "argv", ["buse", "-p"])
     main.app()
     assert main.state.profile is True
     capsys.readouterr()
     main.state.profile = False
 
+
+def test_app_instance_start(monkeypatch, capsys):
+    monkeypatch.setattr(main.session_manager, "get_session", lambda _: None)
+    monkeypatch.setattr(main.session_manager, "start_session", lambda _: None)
     monkeypatch.setattr(main.sys, "argv", ["buse", "b1"])
     main.app()
     out = json.loads(capsys.readouterr().out)
     assert out["message"] == "Initialized b1"
 
+
+def test_app_instance_existing(monkeypatch, capsys):
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: SimpleNamespace())
     monkeypatch.setattr(main.sys, "argv", ["buse", "b1"])
     main.app()
     out = json.loads(capsys.readouterr().out)
     assert out["already_running"] is True
 
+
+def test_app_instance_command(monkeypatch):
     def ok_instance_app(*args, **kwargs):
         return None
 

@@ -6,7 +6,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, Optional, cast
+from typing import Dict, Optional
 
 from pydantic import BaseModel
 
@@ -48,11 +48,16 @@ class SessionManager:
             )
 
     def _cdp_ready(self, cdp_url: str) -> bool:
-        import httpx
+        from urllib.parse import urlparse
 
         try:
-            resp = httpx.get(f"{cdp_url}/json/version", timeout=0.5)
-            return resp.status_code == 200
+            parsed = urlparse(cdp_url)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port
+            if port is None:
+                return False
+            with socket.create_connection((host, port), timeout=0.2):
+                return True
         except Exception:
             return False
 

@@ -1,5 +1,4 @@
 import json
-import types
 from pathlib import Path
 
 import pytest
@@ -57,11 +56,15 @@ def test_save_sessions(tmp_path):
 def test_cdp_ready_true(monkeypatch, tmp_path):
     manager = make_manager(tmp_path)
 
-    class Resp:
-        status_code = 200
+    class DummySock:
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: Resp())
-    assert manager._cdp_ready("http://x") is True
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("socket.create_connection", lambda *args, **kwargs: DummySock())
+    assert manager._cdp_ready("http://x:9222") is True
 
 
 def test_cdp_ready_false(monkeypatch, tmp_path):
@@ -70,7 +73,12 @@ def test_cdp_ready_false(monkeypatch, tmp_path):
     def boom(*args, **kwargs):
         raise RuntimeError("fail")
 
-    monkeypatch.setattr("httpx.get", boom)
+    monkeypatch.setattr("socket.create_connection", boom)
+    assert manager._cdp_ready("http://x:9222") is False
+
+
+def test_cdp_ready_missing_port(tmp_path):
+    manager = make_manager(tmp_path)
     assert manager._cdp_ready("http://x") is False
 
 
@@ -201,6 +209,88 @@ def test_start_session_cdp_not_ready(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError):
         manager.start_session("b1")
     assert proc.killed is True
+
+
+def test_find_free_port_falls_back(monkeypatch, tmp_path):
+    manager = make_manager(tmp_path)
+    monkeypatch.setattr(manager, "_is_port_free", lambda port: False)
+    monkeypatch.setattr(manager, "_find_ephemeral_port", lambda: 9999)
+    assert manager._find_free_port(set(), start=9222, max_tries=2) == 9999
+
+
+def test_find_free_port_returns_available(monkeypatch, tmp_path):
+    manager = make_manager(tmp_path)
+    monkeypatch.setattr(manager, "_is_port_free", lambda port: port == 9223)
+    assert manager._find_free_port(set(), start=9222, max_tries=5) == 9223
+
+
+def test_is_port_free_false(monkeypatch, tmp_path):
+    manager = make_manager(tmp_path)
+
+    class FakeSock:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def setsockopt(self, *args, **kwargs):
+            return None
+
+        def bind(self, *args, **kwargs):
+            raise OSError("in use")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: FakeSock())
+    assert manager._is_port_free(1234) is False
+
+
+def test_is_port_free_true(monkeypatch, tmp_path):
+    manager = make_manager(tmp_path)
+
+    class FakeSock:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def setsockopt(self, *args, **kwargs):
+            return None
+
+        def bind(self, *args, **kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: FakeSock())
+    assert manager._is_port_free(1234) is True
+
+
+def test_find_ephemeral_port(monkeypatch, tmp_path):
+    manager = make_manager(tmp_path)
+
+    class FakeSock:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def bind(self, *args, **kwargs):
+            return None
+
+        def getsockname(self):
+            return ("127.0.0.1", 5555)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("socket.socket", lambda *args, **kwargs: FakeSock())
+    assert manager._find_ephemeral_port() == 5555
 
 
 def test_find_chrome_executable(monkeypatch, tmp_path):
