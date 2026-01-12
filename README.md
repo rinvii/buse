@@ -75,18 +75,17 @@ uv pip install -e .
 
 ### 2. Analysis & Extraction
 
-| Command   | Description                                               | Example                              |
-| :-------- | :-------------------------------------------------------- | :----------------------------------- |
-| `observe` | Get minified DOM (use `--screenshot` to include an image) | `buse b1 observe --screenshot`       |
-| `extract` | Use LLM to extract data (set `BUSE_EXTRACT_MODEL`)        | `buse b1 extract "get product info"` |
+| Command   | Description                                | Example                              |
+| :-------- | :----------------------------------------- | :----------------------------------- |
+| `observe` | Snapshot DOM + optionally save screenshots | `buse b1 observe --screenshot`       |
+| `extract` | LLM extraction (set `BUSE_EXTRACT_MODEL`)  | `buse b1 extract "get product info"` |
 
 #### observe notes
 
-`observe` returns a minified DOM snapshot with element indices usable by actions (click/input/hover/...) like `[12]`.
-Those indices are ephemeral: they're only valid for the current page state and may change
-after any action (click, input, send-keys, navigate, refresh).
-If an index is stale or fails, run `buse <id> observe` to refresh indices. If you need
-stability across steps, use `--id` or `--class` instead of indices.
+- DOM indices are ephemeral; refresh with `buse <id> observe` after page changes, or use `--id`/`--class` for stability.
+- `observe --omniparser` always captures a screenshot: saves `image.jpg` (input) and `image_som.jpg` (server output) in the screenshots dir or `--path`.
+- When available, `screenshot_path` points to `image_som.jpg`. OmniParser `bbox` values are in CSS pixels (not normalized).
+- Use `--no-dom` to skip DOM processing and return an empty `dom_minified`.
 
 ### 3. Navigation & Interaction
 
@@ -103,7 +102,7 @@ stability across steps, use `--id` or `--class` instead of indices.
 | `dropdown-options` | List options for a select element by index or `--id`/`--class`                                      | `buse b1 dropdown-options 12`            |
 | `select-dropdown`  | Select dropdown option by visible text and index or `--id`/`--class` (use `--text` when no index)   | `buse b1 select-dropdown 12 "Option"`    |
 | `hover`            | Hover over an element by index or `--id`/`--class`                                                  | `buse b1 hover 5`                        |
-| `scroll`           | Scroll page or a specific element                                                                   | `buse b1 scroll --down --pages 2`        |
+| `scroll`           | Scroll page or a specific element (use `--up` or `--down`)                                          | `buse b1 scroll --up --pages 2`          |
 | `refresh`          | Reload the current page                                                                             | `buse b1 refresh`                        |
 | `go-back`          | Go back in browser history                                                                          | `buse b1 go-back`                        |
 | `wait`             | Wait for N seconds                                                                                  | `buse b1 wait 2`                         |
@@ -117,6 +116,42 @@ stability across steps, use `--id` or `--class` instead of indices.
 | `close-tab`  | Close by 4-char tab ID  | `buse b1 close-tab "4D39"`  |
 
 ## Examples
+
+### Flag Matrix
+
+Global (all commands):
+
+- `--format` (`json`|`toon`, default: `json`), `-f` alias
+- `--profile` (default: `false`), `-p` alias
+
+Commands:
+
+- `list`: no flags
+- `<id>`: no flags (start/attach instance)
+- `observe`: `--screenshot` (false), `--path` (unset), `--omniparser` (false), `--no-dom` (false)
+- `navigate`: `--new-tab` (false)
+- `new-tab`: no flags
+- `search`: `--engine` (default: `google`)
+- `click`: `--x` (unset), `--y` (unset), `--id` (unset), `--class` (unset)
+- `input`: `--text` (unset), `--id` (unset), `--class` (unset)
+- `upload-file`: no flags
+- `send-keys`: `--index` (unset), `--id` (unset), `--class` (unset), `--list-keys` (false)
+- `find-text`: no flags
+- `dropdown-options`: `--id` (unset), `--class` (unset)
+- `select-dropdown`: `--text` (unset), `--id` (unset), `--class` (unset)
+- `hover`: `--id` (unset), `--class` (unset)
+- `scroll`: `--down/--up` (down default), `--pages` (default: `1.0`), `--index` (unset)
+- `refresh`: no flags
+- `go-back`: no flags
+- `wait`: no flags
+- `switch-tab`: no flags
+- `close-tab`: no flags
+- `save-state`: no flags
+- `extract`: no flags
+- `evaluate`: no flags
+- `stop`: no flags
+
+### Commands
 
 ```bash
 # Start a session
@@ -160,6 +195,7 @@ buse b1 select-dropdown --id "country" --text "Canada"
 
 # Scroll and wait
 buse b1 scroll --down --pages 1.5
+buse b1 scroll --up --pages 1
 buse b1 wait 2
 ```
 
@@ -175,6 +211,7 @@ buse b1 wait 2
 - `BUSE_KEEP_SESSION`: set to `1` to keep the session open within a single process.
 - `BUSE_SELECTOR_CACHE_TTL`: selector-map cache TTL in seconds (default: `0`, disabled).
 - `BUSE_REMOTE_ALLOW_ORIGINS`: override Chrome `--remote-allow-origins` (default: `http://localhost:<port>,http://127.0.0.1:<port>`).
+- `BUSE_IMAGE_QUALITY`: JPEG quality (1-100) for OmniParser images.
 
 ## References & Inspiration
 
@@ -183,3 +220,10 @@ https://blog.google/innovation-and-ai/models-and-research/google-deepmind/gemini
 https://www.anthropic.com/news/3-5-models-and-computer-use
 
 https://docs.browser-use.com/introduction
+
+## Roadmap
+
+- Support all operating systems: Windows, macOS, Linux (right now works on my 10.15 macOS and Windows 11)
+- Add automation scripting examples
+- Add MCP support
+- Add optional daemon for persistent background sessions

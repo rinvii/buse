@@ -5,9 +5,10 @@ import logging
 import os
 import sys
 import time
+import httpx
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 import typer
 
@@ -42,6 +43,91 @@ def _get_selector_cache_ttl_seconds() -> float:
     except ValueError:
         return 0.0
     return ttl if ttl > 0 else 0.0
+
+
+def _parse_image_quality(quality: Optional[int]) -> Optional[int]:
+    if quality is None:
+        raw = os.getenv("BUSE_IMAGE_QUALITY", "").strip()
+        if raw:
+            try:
+                quality = int(raw)
+            except ValueError as exc:
+                raise typer.BadParameter(
+                    "BUSE_IMAGE_QUALITY must be an integer between 1 and 100."
+                ) from exc
+    if quality is None:
+        return None
+    if quality < 1 or quality > 100:
+        raise typer.BadParameter("Image quality must be between 1 and 100.")
+    return quality
+
+
+_OMNIPARSER_PROBE_TTL_SECONDS = 600.0
+_omniparser_probe_cache: dict[str, float] = {}
+
+
+def _normalize_omniparser_endpoint(endpoint: str) -> str:
+    return endpoint.strip().rstrip("/")
+
+
+def _settings_path() -> Path:
+    return session_manager.config_dir / "settings.json"
+
+
+def _load_settings() -> dict:
+    path = _settings_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_settings(data: dict) -> None:
+    path = _settings_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+    except Exception:
+        pass
+
+
+def _load_omniparser_probe_cache() -> None:
+    if _omniparser_probe_cache:
+        return
+    data = _load_settings()
+    probe_cache = data.get("omniparser_probe", {})
+    if not isinstance(probe_cache, dict):
+        return
+    for key, value in probe_cache.items():
+        timestamp = value
+        if isinstance(value, dict):
+            timestamp = value.get("timestamp")
+        if isinstance(timestamp, (int, float)):
+            _omniparser_probe_cache[str(key)] = float(timestamp)
+
+
+def _save_omniparser_probe_cache() -> None:
+    data = _load_settings()
+    data["omniparser_probe"] = _omniparser_probe_cache
+    _save_settings(data)
+
+
+def _should_probe_omniparser(endpoint: str) -> bool:
+    _load_omniparser_probe_cache()
+    last_probe = _omniparser_probe_cache.get(endpoint)
+    if not isinstance(last_probe, (int, float)):
+        return True
+    return (time.time() - last_probe) >= _OMNIPARSER_PROBE_TTL_SECONDS
+
+
+def _mark_omniparser_probe(endpoint: str) -> None:
+    _omniparser_probe_cache[endpoint] = time.time()
+    _save_omniparser_probe_cache()
+
+
 _SEND_KEYS_NAV_KEYS = [
     "Backspace",
     "Tab",
@@ -125,28 +211,25 @@ _SEND_KEYS_OTHER_KEYS = [
     "Help",
     "ContextMenu",
 ]
-_SEND_KEYS_SOLO_KEYS = (
-    [
-        "Enter",
-        "Tab",
-        "Delete",
-        "Backspace",
-        "Escape",
-        "ArrowUp",
-        "ArrowDown",
-        "ArrowLeft",
-        "ArrowRight",
-        "PageUp",
-        "PageDown",
-        "Home",
-        "End",
-        "Control",
-        "Alt",
-        "Meta",
-        "Shift",
-    ]
-    + [f"F{num}" for num in range(1, 13)]
-)
+_SEND_KEYS_SOLO_KEYS = [
+    "Enter",
+    "Tab",
+    "Delete",
+    "Backspace",
+    "Escape",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "PageUp",
+    "PageDown",
+    "Home",
+    "End",
+    "Control",
+    "Alt",
+    "Meta",
+    "Shift",
+] + [f"F{num}" for num in range(1, 13)]
 _SEND_KEYS_ALIAS_LINES = [
     "ctrl/control -> Control",
     "option -> Alt",
@@ -155,7 +238,7 @@ _SEND_KEYS_ALIAS_LINES = [
     "return -> Enter",
     "tab -> Tab",
     "delete/backspace -> Delete/Backspace",
-    "space -> \" \"",
+    'space -> " "',
     "up/down/left/right -> ArrowUp/ArrowDown/ArrowLeft/ArrowRight",
     "pageup/pagedown -> PageUp/PageDown",
     "home/end -> Home/End",
@@ -212,17 +295,13 @@ def _format_send_keys_help() -> str:
     ]
     lines = ["Special keys (sent as key events when used alone):"]
     lines.append(f"  {', '.join(_SEND_KEYS_SOLO_KEYS)}")
-    lines.append(
-        "  Everything else is typed as text unless used in a combo."
-    )
+    lines.append("  Everything else is typed as text unless used in a combo.")
     lines.append("")
     lines.append("Named keys (case-sensitive):")
     for label, keys in sections:
         lines.append(f"  {label}: {', '.join(keys)}")
     lines.append("  Letters/digits: A-Z, 0-9 (single characters).")
-    lines.append(
-        "  Punctuation literals also work: ; = , - . / ` [ \\ ] ' and space."
-    )
+    lines.append("  Punctuation literals also work: ; = , - . / ` [ \\ ] ' and space.")
     lines.append("")
     lines.append("Aliases (case-insensitive):")
     for alias_line in _SEND_KEYS_ALIAS_LINES:
@@ -238,7 +317,7 @@ def _format_send_keys_help() -> str:
     return "\n".join(lines)
 
 
-def _is_reserved_key_sequence(keys: str) -> bool:
+def _is_reserved_key_sequence(keys: Optional[str]) -> bool:
     if not isinstance(keys, str):
         return False
     cleaned = keys.strip()
@@ -282,7 +361,9 @@ async def _get_browser_session(instance_id: str, session_info):
     return browser_session, file_system
 
 
-async def _ensure_selector_map(browser_session, instance_id: str, force: bool = False) -> None:
+async def _ensure_selector_map(
+    browser_session, instance_id: str, force: bool = False
+) -> None:
     now = time.time()
     last = _selector_cache.get(instance_id, 0.0)
     ttl_seconds = _get_selector_cache_ttl_seconds()
@@ -406,7 +487,9 @@ class ResultEmitter:
     class EarlyExit(Exception):
         pass
 
-    def __init__(self, defer_output: bool, params_for_hint: dict, profile: dict) -> None:
+    def __init__(
+        self, defer_output: bool, params_for_hint: dict, profile: dict
+    ) -> None:
         self.defer_output = defer_output
         self.params_for_hint = params_for_hint
         self.profile = profile
@@ -422,12 +505,17 @@ class ResultEmitter:
         if code:
             sys.exit(code)
 
-    def emit_error(self, action: str, message: str) -> None:
+    def emit_error(
+        self, action: str, message: str, error_details: Optional[dict[str, Any]] = None
+    ) -> None:
+        if error_details is None:
+            error_details = _build_error_details("execute_tool", action=action)
         payload = ActionResult(
             success=False,
             action=action,
             message=None,
             error=_augment_error(action, self.params_for_hint, message),
+            error_details=error_details,
             extracted_content=None,
             profile=self.profile if state.profile else None,
         )
@@ -444,19 +532,31 @@ class ResultEmitter:
         )
         self._emit(payload, code=0)
 
-    def emit_result(self, action: str, message: Optional[str], error: Optional[str], extracted_content) -> None:
+    def emit_result(
+        self,
+        action: str,
+        message: Optional[str],
+        error: Optional[str],
+        extracted_content,
+        error_details: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if error and error_details is None:
+            error_details = _build_error_details("execute_tool", action=action)
         payload = ActionResult(
             success=not error,
             action=action,
             message=message,
             error=error,
+            error_details=error_details if error else None,
             extracted_content=extracted_content if not error else None,
             profile=self.profile if state.profile else None,
         )
         self._emit(payload, code=1 if error else 0)
 
-    def fail(self, action: str, message: str) -> None:
-        self.emit_error(action, message)
+    def fail(
+        self, action: str, message: str, error_details: Optional[dict[str, Any]] = None
+    ) -> None:
+        self.emit_error(action, message, error_details=error_details)
         if self.defer_output:
             raise ResultEmitter.EarlyExit()
 
@@ -472,7 +572,7 @@ class ResultEmitter:
 async def _get_navigation_timings(browser_session) -> dict[str, float]:
     cdp_session = await browser_session.get_or_create_cdp_session()
     code = (
-        "(function(){"
+        "(function(){ "
         "const entries=performance.getEntriesByType('navigation');"
         "const entry=entries && entries[0];"
         "if(!entry){return null;}"
@@ -488,13 +588,11 @@ async def _get_navigation_timings(browser_session) -> dict[str, float]:
         params={"expression": code, "returnByValue": True},
         session_id=cdp_session.session_id,
     )
-    value = result.get("result", {}).get("value", {}) if result else {}
+    value = result.get("result", {}).get("value", {})
     if not isinstance(value, dict):
         return {}
     return {
-        k: float(v)
-        for k, v in value.items()
-        if isinstance(v, (int, float)) and v >= 0
+        k: float(v) for k, v in value.items() if isinstance(v, (int, float)) and v >= 0
     }
 
 
@@ -510,16 +608,14 @@ async def _try_js_fallback(
     cdp_session = await browser_session.get_or_create_cdp_session()
     profiler.mark("js_cdp_session_ms", start_cdp)
     code = (
-        "(function(){"
-        "const selector="
-        + json.dumps(selector)
-        + ";"
-        "const findDeep=(root)=>{"
+        "(function(){ "
+        "const selector=" + json.dumps(selector) + ";"
+        "const findDeep=(root)=>{ "
         "const el=root.querySelector(selector);"
         "if(el){return el;}"
         "const nodes=root.querySelectorAll('*');"
-        "for(const node of nodes){"
-        "if(node.shadowRoot){"
+        "for(const node of nodes){ "
+        "if(node.shadowRoot){ "
         "const found=findDeep(node.shadowRoot);"
         "if(found){return found;}"
         "}"
@@ -531,10 +627,7 @@ async def _try_js_fallback(
         "const tag=el.tagName;"
     )
     if action_name == "click":
-        code += (
-            "el.click();"
-            "return {ok:true,tag:tag};"
-        )
+        code += "el.click();return {ok:true,tag:tag};"
     elif action_name == "hover":
         code += (
             "el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));"
@@ -542,10 +635,8 @@ async def _try_js_fallback(
         )
     else:
         code += (
-            "const value="
-            + json.dumps(text)
-            + ";"
-            "if('value' in el){"
+            "const value=" + json.dumps(text) + ";"
+            "if('value' in el){ "
             "el.focus();"
             "el.value=value;"
             "el.dispatchEvent(new Event('input',{bubbles:true}));"
@@ -562,11 +653,7 @@ async def _try_js_fallback(
     )
     profiler.mark("js_eval_ms", start_eval)
     profiler.mark("js_fallback_ms", start_fallback)
-    value = (
-        result.get("result", {}).get("value", {})
-        if result
-        else {}
-    )
+    value = result.get("result", {}).get("value", {}) if result else {}
     if not value.get("ok"):
         return False, None
     if action_name == "input":
@@ -623,10 +710,8 @@ async def _try_dropdown_fallback(
     profiler.mark("dropdown_cdp_session_ms", start_cdp)
     if action_name == "dropdown_options":
         code = (
-            "(function(){"
-            "const sel=document.querySelector("
-            + json.dumps(selector)
-            + ");"
+            "(function(){ "
+            "const sel=document.querySelector(" + json.dumps(selector) + ");"
             "let el=sel;"
             "if(el && el.tagName!=='SELECT'){el=el.querySelector('select')||el.closest('select');}"
             "if(!el||el.tagName!=='SELECT'){return {error:'Select element not found'};}"
@@ -640,11 +725,7 @@ async def _try_dropdown_fallback(
             session_id=cdp_session.session_id,
         )
         profiler.mark("dropdown_eval_ms", start_eval)
-        value = (
-            result.get("result", {}).get("value", {})
-            if result
-            else {}
-        )
+        value = result.get("result", {}).get("value", {}) if result else {}
         if value.get("error"):
             return True, value.get("error"), None
         lines = []
@@ -660,16 +741,12 @@ async def _try_dropdown_fallback(
         return True, None, msg
     if action_name == "select_dropdown":
         code = (
-            "(function(){"
-            "const sel=document.querySelector("
-            + json.dumps(selector)
-            + ");"
+            "(function(){ "
+            "const sel=document.querySelector(" + json.dumps(selector) + ");"
             "let el=sel;"
             "if(el && el.tagName!=='SELECT'){el=el.querySelector('select')||el.closest('select');}"
             "if(!el||el.tagName!=='SELECT'){return {error:'Select element not found'};}"
-            "const target="
-            + json.dumps(text)
-            + ";"
+            "const target=" + json.dumps(text) + ";"
             "const opt=[...el.options].find(o=>o.text===target||o.value===target);"
             "if(!opt){return {error:'Option not found'};}"
             "el.value=opt.value;"
@@ -683,16 +760,10 @@ async def _try_dropdown_fallback(
             session_id=cdp_session.session_id,
         )
         profiler.mark("dropdown_eval_ms", start_eval)
-        value = (
-            result.get("result", {}).get("value", {})
-            if result
-            else {}
-        )
+        value = result.get("result", {}).get("value", {}) if result else {}
         if value.get("error"):
             return True, value.get("error"), None
-        msg = (
-            f'Selected option: {value.get("text")} (value: {value.get("value")})'
-        )
+        msg = f"Selected option: {value.get('text')} (value: {value.get('value')})"
         return True, None, msg
     return False, None, None
 
@@ -718,14 +789,23 @@ async def _verify_close_tab(
 def _augment_error(action_name: str, params: dict, error: str) -> str:
     hint = None
     message = error
-    if action_name in {"click", "input", "dropdown_options", "select_dropdown", "hover"}:
+    if action_name in {
+        "click",
+        "input",
+        "dropdown_options",
+        "select_dropdown",
+        "hover",
+    }:
         missing_index = params.get("index") is None
         missing_resolver = not (params.get("element_id") or params.get("element_class"))
         missing_coords = not (
-            params.get("coordinate_x") is not None and params.get("coordinate_y") is not None
+            params.get("coordinate_x") is not None
+            and params.get("coordinate_y") is not None
         )
         if missing_index and missing_resolver and missing_coords:
-            hint = "Provide an index or use --id/--class, or use --x/--y for coordinates."
+            hint = (
+                "Provide an index or use --id/--class, or use --x/--y for coordinates."
+            )
         elif missing_index and missing_resolver:
             hint = "Provide an index or use --id/--class (run observe to get indices)."
     if action_name == "click" and (
@@ -737,7 +817,8 @@ def _augment_error(action_name: str, params: dict, error: str) -> str:
         hint = "Run `buse <id> observe` and use an index or pass the actual <select> --id/--class."
     lowered_error = message.lower()
     if "element index" in lowered_error and (
-        "not available" in lowered_error or "not found in browser state" in lowered_error
+        "not available" in lowered_error
+        or "not found in browser state" in lowered_error
     ):
         message = (
             message.replace(" - page may have changed.", "")
@@ -783,7 +864,8 @@ def _augment_error(action_name: str, params: dict, error: str) -> str:
         hint = "Run `buse <id>` first to start an instance or use `buse list`."
     if action_name == "send_keys" and hint is None:
         has_focus_target = any(
-            params.get(key) is not None for key in ("index", "element_id", "element_class")
+            params.get(key) is not None
+            for key in ("index", "element_id", "element_class")
         )
         keys = params.get("keys")
         if (
@@ -801,6 +883,20 @@ def _augment_error(action_name: str, params: dict, error: str) -> str:
     return message
 
 
+def _build_error_details(
+    stage: str,
+    *,
+    retryable: Optional[bool] = None,
+    **context: Any,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {"stage": stage}
+    if retryable is not None:
+        details["retryable"] = retryable
+    if context:
+        details["context"] = context
+    return details
+
+
 def _coerce_index_error(message: Optional[str]) -> Optional[str]:
     if not isinstance(message, str):
         return None
@@ -814,13 +910,20 @@ def _coerce_index_error(message: Optional[str]) -> Optional[str]:
     return None
 
 
-def _output_error(action: str, params: dict, message: str, profile: Optional[dict[str, float]] = None):
+def _output_error(
+    action: str,
+    params: dict,
+    message: str,
+    profile: Optional[dict[str, float]] = None,
+    error_details: Optional[dict[str, Any]] = None,
+):
     output_data(
         ActionResult(
             success=False,
             action=action,
             message=None,
             error=_augment_error(action, params, message),
+            error_details=error_details,
             extracted_content=None,
             profile=profile if state.profile else None,
         )
@@ -848,12 +951,20 @@ async def execute_tool(
         session_info = session_manager.get_session(instance_id)
     if session_info is None:
         await _stop_cached_browser_session(instance_id)
-        emitter.fail(label, f"Instance {instance_id} not found.")
+        emitter.fail(
+            label,
+            f"Instance {instance_id} not found.",
+            error_details=_build_error_details(
+                "session", retryable=False, instance_id=instance_id
+            ),
+        )
 
     profile["browser_session_cached"] = 1.0 if instance_id in _browser_sessions else 0.0
     profile["file_system_cached"] = 1.0 if instance_id in _file_systems else 0.0
     with profiler.span("get_browser_session_ms"):
-        browser_session, file_system = await _get_browser_session(instance_id, session_info)
+        browser_session, file_system = await _get_browser_session(
+            instance_id, session_info
+        )
 
     try:
         if needs_selector_map:
@@ -894,7 +1005,6 @@ async def execute_tool(
                 "dropdown_options",
                 "select_dropdown",
             }:
-                # Fallback: resolve and operate on native <select> via JS when selector_map misses it.
                 selector = None
                 if element_id:
                     selector = f"#{element_id}"
@@ -913,7 +1023,9 @@ async def execute_tool(
                     if handled and error_msg:
                         emitter.fail(action_name, error_msg)
                     if handled and success_msg:
-                        profile["total_ms"] = (time.perf_counter() - start_total) * 1000.0
+                        profile["total_ms"] = (
+                            time.perf_counter() - start_total
+                        ) * 1000.0
                         emitter.emit_success(action_name, success_msg)
                         if defer_output:
                             raise ResultEmitter.EarlyExit()
@@ -1033,7 +1145,15 @@ async def execute_tool(
         pass
     except Exception as e:
         profile["total_ms"] = (time.perf_counter() - start_total) * 1000.0
-        emitter.fail(label, f"{label} failed: {type(e).__name__}: {e}")
+        emitter.fail(
+            label,
+            f"{label} failed: {type(e).__name__}: {e}",
+            error_details=_build_error_details(
+                "execute_tool",
+                exception_type=type(e).__name__,
+                action=label,
+            ),
+        )
     finally:
         if not _should_keep_session():
             cleanup_start = time.perf_counter()
@@ -1047,30 +1167,335 @@ async def execute_tool(
     epilog="Example: buse b1 observe --screenshot",
 )
 def observe(
-    ctx: typer.Context, screenshot: bool = typer.Option(False, help="Take a screenshot")
+    ctx: typer.Context,
+    screenshot: bool = typer.Option(False, "--screenshot", help="Take a screenshot."),
+    path: Optional[str] = typer.Option(
+        None, "--path", help="Custom path for screenshot."
+    ),
+    omniparser: bool = typer.Option(
+        False, "--omniparser", help="Analyze page with OmniParser."
+    ),
+    no_dom: bool = typer.Option(
+        False, "--no-dom", help="Skip DOM processing and omit dom_minified."
+    ),
 ):
+    if omniparser and not os.getenv("BUSE_OMNIPARSER_URL"):
+        raise typer.BadParameter(
+            "BUSE_OMNIPARSER_URL environment variable is required when using --omniparser.\n"
+        )
+    quality_override = _parse_image_quality(None)
     instance_id = ctx.obj["instance_id"]
 
     async def run():
+        endpoint = None
+        if omniparser:
+            endpoint = _normalize_omniparser_endpoint(
+                os.getenv("BUSE_OMNIPARSER_URL", "")
+            )
+
+            if _should_probe_omniparser(endpoint):
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as client:
+                        resp = await client.get(f"{endpoint}/probe/")
+                        resp.raise_for_status()
+                    _mark_omniparser_probe(endpoint)
+                except httpx.HTTPStatusError as e:
+                    _output_error(
+                        "observe",
+                        {"omniparser": True},
+                        f"OmniParser server at {endpoint} returned {e.response.status_code}",
+                        error_details=_build_error_details(
+                            "omniparser_probe",
+                            retryable=e.response.status_code >= 500,
+                            endpoint=endpoint,
+                            status_code=e.response.status_code,
+                        ),
+                    )
+                    sys.exit(1)
+                except Exception as e:
+                    _output_error(
+                        "observe",
+                        {"omniparser": True},
+                        f"Cannot reach OmniParser at {endpoint}: {e}",
+                        error_details=_build_error_details(
+                            "omniparser_probe",
+                            retryable=True,
+                            endpoint=endpoint,
+                            exception_type=type(e).__name__,
+                        ),
+                    )
+                    sys.exit(1)
+
         start_session = time.perf_counter()
         session_info = session_manager.get_session(instance_id)
         get_session_ms = (time.perf_counter() - start_session) * 1000.0
         if not session_info:
             await _stop_cached_browser_session(instance_id)
-            _output_error("observe", {}, f"Instance {instance_id} not found.")
+            _output_error(
+                "observe",
+                {},
+                f"Instance {instance_id} not found.",
+                error_details=_build_error_details(
+                    "session", retryable=False, instance_id=instance_id
+                ),
+            )
             sys.exit(1)
         start_browser = time.perf_counter()
         browser_session, _ = await _get_browser_session(instance_id, session_info)
         get_browser_session_ms = (time.perf_counter() - start_browser) * 1000.0
 
         try:
+            profile_extra: dict[str, float] = {}
             start_state = time.perf_counter()
-            state_summary = await browser_session.get_browser_state_summary(
-                include_screenshot=screenshot
-            )
+            include_screenshot = screenshot
+
+            try:
+                if no_dom:
+                    from browser_use.browser.events import BrowserStateRequestEvent
+
+                    event = browser_session.event_bus.dispatch(
+                        BrowserStateRequestEvent(
+                            include_dom=False, include_screenshot=include_screenshot
+                        )
+                    )
+                    state_summary = await event.event_result(
+                        raise_if_none=True, raise_if_any=True
+                    )
+                else:
+                    state_summary = await browser_session.get_browser_state_summary(
+                        include_screenshot=include_screenshot
+                    )
+            except Exception as e:
+                if "timeout" in str(e).lower() and include_screenshot:
+                    try:
+                        if no_dom:
+                            from browser_use.browser.events import (
+                                BrowserStateRequestEvent,
+                            )
+
+                            event = browser_session.event_bus.dispatch(
+                                BrowserStateRequestEvent(
+                                    include_dom=False,
+                                    include_screenshot=include_screenshot,
+                                )
+                            )
+                            state_summary = await event.event_result(
+                                raise_if_none=True, raise_if_any=True
+                            )
+                        else:
+                            state_summary = (
+                                await browser_session.get_browser_state_summary(
+                                    include_screenshot=include_screenshot
+                                )
+                            )
+                    except Exception as e2:
+                        _output_error(
+                            "observe",
+                            {"screenshot": include_screenshot},
+                            f"Failed to capture browser state (timed out twice): {e2}",
+                            error_details=_build_error_details(
+                                "state_capture",
+                                retryable=True,
+                                include_screenshot=include_screenshot,
+                                exception_type=type(e2).__name__,
+                            ),
+                        )
+                        sys.exit(1)
+                else:
+                    _output_error(
+                        "observe",
+                        {"screenshot": include_screenshot},
+                        f"Failed to capture browser state: {e}",
+                        error_details=_build_error_details(
+                            "state_capture",
+                            retryable=False,
+                            include_screenshot=include_screenshot,
+                            exception_type=type(e).__name__,
+                        ),
+                    )
+                    sys.exit(1)
+
             state_ms = (time.perf_counter() - start_state) * 1000.0
-            _selector_cache[instance_id] = time.time()
+            if not no_dom:
+                _selector_cache[instance_id] = time.time()
             focused_id = browser_session.agent_focus_target_id
+            screenshot_data = state_summary.screenshot
+            cdp_screenshot_error = None
+            needs_screenshot = screenshot or omniparser
+            omniparser_shot_dir = None
+            omniparser_image_data = None
+            som_path = None
+
+            try:
+                cdp_session = await browser_session.get_or_create_cdp_session()
+                viewport_res = await cdp_session.cdp_client.send.Runtime.evaluate(
+                    params={
+                        "expression": "({width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio})",
+                        "returnByValue": True,
+                    },
+                    session_id=cdp_session.session_id,
+                )
+                viewport_data = viewport_res.get("result", {}).get("value")
+                if needs_screenshot and not screenshot_data:
+                    try:
+                        capture_start = time.perf_counter() if state.profile else None
+                        capture = (
+                            await cdp_session.cdp_client.send.Page.captureScreenshot(
+                                params={"format": "png"},
+                                session_id=cdp_session.session_id,
+                            )
+                        )
+                        if capture_start is not None:
+                            profile_extra["cdp_screenshot_ms"] = (
+                                time.perf_counter() - capture_start
+                            ) * 1000.0
+                        capture_data = (
+                            capture.get("data") if isinstance(capture, dict) else None
+                        )
+                        if isinstance(capture_data, str) and capture_data:
+                            screenshot_data = capture_data
+                        else:
+                            cdp_screenshot_error = "CDP capture returned no data"
+                    except Exception as capture_exc:
+                        cdp_screenshot_error = str(capture_exc) or "CDP capture failed"
+            except Exception as e:
+                _output_error(
+                    "observe",
+                    {},
+                    f"Failed to access browser via CDP: {e}",
+                    error_details=_build_error_details(
+                        "cdp_access",
+                        retryable=False,
+                        exception_type=type(e).__name__,
+                    ),
+                )
+                sys.exit(1)
+
+            viewport = None
+            if viewport_data:
+                from .models import ViewportInfo
+
+                viewport = ViewportInfo(**viewport_data)
+
+            omniparser_quality = (
+                quality_override if quality_override is not None else 95
+            )
+            som_quality = quality_override if quality_override is not None else 75
+
+            visual_analysis = None
+            if omniparser:
+                omniparser_start = time.perf_counter() if state.profile else None
+                if not screenshot_data:
+                    message = "Failed to capture screenshot required for OmniParser."
+                    if cdp_screenshot_error:
+                        message = (
+                            f"{message} CDP screenshot failed: {cdp_screenshot_error}"
+                        )
+                    else:
+                        message = (
+                            f"{message} The page might be too slow or unresponsive."
+                        )
+                    _output_error(
+                        "observe",
+                        {"omniparser": True},
+                        message,
+                        error_details=_build_error_details(
+                            "omniparser_input",
+                            retryable=True,
+                            reason="missing_screenshot",
+                            cdp_screenshot_error=cdp_screenshot_error,
+                        ),
+                    )
+                    sys.exit(1)
+                if not viewport:
+                    _output_error(
+                        "observe",
+                        {"omniparser": True},
+                        "Failed to capture viewport info required for OmniParser.",
+                        error_details=_build_error_details(
+                            "omniparser_input",
+                            retryable=True,
+                            reason="missing_viewport",
+                        ),
+                    )
+                    sys.exit(1)
+
+                omniparser_shot_dir = Path(session_info.user_data_dir) / "screenshots"
+                if path:
+                    p = Path(path)
+                    if p.is_dir() or not p.suffix:
+                        omniparser_shot_dir = p
+                    else:
+                        omniparser_shot_dir = p.parent or omniparser_shot_dir
+                omniparser_shot_dir.mkdir(exist_ok=True, parents=True)
+
+                from .vision import VisionClient
+                from .utils import downscale_image
+
+                client = VisionClient(server_url=endpoint)
+
+                try:
+                    prepare_start = time.perf_counter() if state.profile else None
+                    omniparser_image_data = downscale_image(
+                        screenshot_data, quality=omniparser_quality
+                    )
+                    if prepare_start is not None:
+                        profile_extra["omniparser_prepare_ms"] = (
+                            time.perf_counter() - prepare_start
+                        ) * 1000.0
+                    request_start = time.perf_counter() if state.profile else None
+                    analysis, som_image_base64 = await client.analyze(
+                        omniparser_image_data, viewport
+                    )
+                    if request_start is not None:
+                        profile_extra["omniparser_request_ms"] = (
+                            time.perf_counter() - request_start
+                        ) * 1000.0
+
+                    if not analysis.elements:
+                        _output_error(
+                            "observe",
+                            {"omniparser": True},
+                            "OmniParser returned no elements for the current page.",
+                            error_details=_build_error_details(
+                                "omniparser_analysis",
+                                retryable=False,
+                                elements=0,
+                            ),
+                        )
+                        sys.exit(1)
+
+                    if som_image_base64:
+                        som_start = time.perf_counter() if state.profile else None
+                        som_image_base64 = downscale_image(
+                            som_image_base64, quality=som_quality
+                        )
+
+                        som_path = str(omniparser_shot_dir / "image_som.jpg")
+                        client.save_som_image(som_image_base64, som_path)
+                        analysis.som_image_path = som_path
+                        if som_start is not None:
+                            profile_extra["omniparser_som_ms"] = (
+                                time.perf_counter() - som_start
+                            ) * 1000.0
+
+                    visual_analysis = analysis
+                    if omniparser_start is not None:
+                        profile_extra["omniparser_total_ms"] = (
+                            time.perf_counter() - omniparser_start
+                        ) * 1000.0
+                except Exception as ve:
+                    _output_error(
+                        "observe",
+                        {"omniparser": True},
+                        f"OmniParser analysis failed: {ve}",
+                        error_details=_build_error_details(
+                            "omniparser_analysis",
+                            exception_type=type(ve).__name__,
+                        ),
+                    )
+                    sys.exit(1)
+
             start_tabs = time.perf_counter()
             tabs = [
                 TabInfo(id=t.target_id, title=t.title, url=t.url)
@@ -1080,24 +1505,67 @@ def observe(
 
             screenshot_path = None
             screenshot_ms = 0.0
-            if screenshot and state_summary.screenshot:
+
+            if (screenshot or omniparser) and screenshot_data:
                 start_shot = time.perf_counter()
-                shot_dir = Path(session_info.user_data_dir) / "screenshots"
-                shot_dir.mkdir(exist_ok=True)
-                screenshot_path = str(shot_dir / "last_state.png")
-                with open(screenshot_path, "wb") as f:
-                    f.write(base64.b64decode(state_summary.screenshot))
+
+                if omniparser:
+                    if omniparser_image_data is None:
+                        _output_error(
+                            "observe",
+                            {"omniparser": True},
+                            "Failed to prepare OmniParser screenshot.",
+                            error_details=_build_error_details(
+                                "omniparser_prepare",
+                                retryable=False,
+                            ),
+                        )
+                        sys.exit(1)
+                    shot_dir = omniparser_shot_dir or (
+                        Path(session_info.user_data_dir) / "screenshots"
+                    )
+                    shot_dir.mkdir(exist_ok=True, parents=True)
+                    image_path = str(shot_dir / "image.jpg")
+                    screenshot_path = som_path or image_path
+                    shot_path = image_path
+                    shot_data = omniparser_image_data
+                else:
+                    shot_data = screenshot_data
+                    ext = "png"
+                    if not path:
+                        shot_dir = Path(session_info.user_data_dir) / "screenshots"
+                        shot_dir.mkdir(exist_ok=True)
+                        screenshot_path = str(shot_dir / f"last_state.{ext}")
+                    else:
+                        p = Path(path)
+                        if p.is_dir():
+                            p.mkdir(exist_ok=True, parents=True)
+                            screenshot_path = str(p / f"last_state.{ext}")
+                        else:
+                            if p.parent:
+                                p.parent.mkdir(exist_ok=True, parents=True)
+                            screenshot_path = str(p)
+                    shot_path = screenshot_path
+
+                with open(shot_path, "wb") as f:
+                    f.write(base64.b64decode(shot_data))
                 screenshot_ms = (time.perf_counter() - start_shot) * 1000.0
 
             obs = Observation(
                 session_id=instance_id,
                 url=state_summary.url,
                 title=state_summary.title,
+                visual_analysis=visual_analysis,
                 tabs=tabs,
+                viewport=viewport,
                 screenshot_path=screenshot_path,
-                dom_minified=state_summary.dom_state.llm_representation()
-                if state_summary.dom_state
-                else "",
+                dom_minified=(
+                    ""
+                    if no_dom
+                    else state_summary.dom_state.llm_representation()
+                    if state_summary.dom_state
+                    else ""
+                ),
             )
 
             data = obs.model_dump()
@@ -1109,6 +1577,7 @@ def observe(
                     "get_state_ms": state_ms,
                     "get_tabs_ms": tabs_ms,
                     "write_screenshot_ms": screenshot_ms,
+                    **profile_extra,
                 }
             output_data(data)
 
@@ -1116,7 +1585,7 @@ def observe(
             if not _should_keep_session():
                 await _stop_cached_browser_session(instance_id)
 
-    @handle_errors
+    @handle_errors(action="observe")
     async def wrapper():
         await run()
 
@@ -1143,15 +1612,13 @@ def navigate(
 )
 def new_tab(ctx: typer.Context, url: str):
     asyncio.run(
-        execute_tool(
-            ctx.obj["instance_id"], "navigate", {"url": url, "new_tab": True}
-        )
+        execute_tool(ctx.obj["instance_id"], "navigate", {"url": url, "new_tab": True})
     )
 
 
 @instance_app.command(
     help="Search the web (duckduckgo, google, bing).",
-    epilog="Example: buse b1 search \"site:example.com\" --engine duckduckgo",
+    epilog='Example: buse b1 search "site:example.com" --engine duckduckgo',
 )
 def search(ctx: typer.Context, query: str, engine: str = "google"):
     asyncio.run(
@@ -1173,7 +1640,13 @@ def click(
     element_id: Optional[str] = typer.Option(None, "--id"),
     element_class: Optional[str] = typer.Option(None, "--class"),
 ):
-    if index is None and x is None and y is None and element_id is None and element_class is None:
+    if (
+        index is None
+        and x is None
+        and y is None
+        and element_id is None
+        and element_class is None
+    ):
         raise typer.BadParameter(
             "Provide an index, --id/--class, or --x/--y. Example: buse b1 click 12 or buse b1 click --x 200 --y 300."
         )
@@ -1203,7 +1676,7 @@ def click(
 
 @instance_app.command(
     help="Input text into form fields.",
-    epilog="Examples: buse b1 input 12 \"hello\" | buse b1 input --id email --text \"a@b.com\"",
+    epilog='Examples: buse b1 input 12 "hello" | buse b1 input --id email --text "a@b.com"',
 )
 def input(
     ctx: typer.Context,
@@ -1216,11 +1689,11 @@ def input(
     resolved_text = text if text is not None else text_opt
     if resolved_text is None:
         raise typer.BadParameter(
-            "Provide text as a positional arg or --text. Example: buse b1 input 12 \"hello\"."
+            'Provide text as a positional arg or --text. Example: buse b1 input 12 "hello".'
         )
     if index is None and element_id is None and element_class is None:
         raise typer.BadParameter(
-            "Provide an index or --id/--class. Example: buse b1 input 12 \"hello\"."
+            'Provide an index or --id/--class. Example: buse b1 input 12 "hello".'
         )
     params = {"text": resolved_text}
     if index is not None:
@@ -1268,7 +1741,7 @@ def upload_file(
 
 @instance_app.command(
     help="Send keys to the browser.",
-    epilog="Examples: buse b1 send-keys \"Enter\" | buse b1 send-keys \"Control+L\" | buse b1 send-keys --id search \"Hello\" | buse b1 send-keys --list-keys",
+    epilog='Examples: buse b1 send-keys "Enter" | buse b1 send-keys "Control+L" | buse b1 send-keys --id search "Hello" | buse b1 send-keys --list-keys',
 )
 def send_keys(
     ctx: typer.Context,
@@ -1319,7 +1792,7 @@ def send_keys(
 
 @instance_app.command(
     help="Scroll to text on the page.",
-    epilog="Example: buse b1 find-text \"Contact Us\"",
+    epilog='Example: buse b1 find-text "Contact Us"',
 )
 def find_text(
     ctx: typer.Context,
@@ -1367,7 +1840,7 @@ def dropdown_options(
 
 @instance_app.command(
     help="Select a dropdown option by visible text.",
-    epilog="Examples: buse b1 select-dropdown 5 \"Canada\" | buse b1 select-dropdown --id country --text \"Canada\"",
+    epilog='Examples: buse b1 select-dropdown 5 "Canada" | buse b1 select-dropdown --id country --text "Canada"',
 )
 def select_dropdown(
     ctx: typer.Context,
@@ -1380,11 +1853,11 @@ def select_dropdown(
     resolved_text = text if text is not None else text_opt
     if resolved_text is None:
         raise typer.BadParameter(
-            "Provide text as a positional arg or --text. Example: buse b1 select-dropdown 5 \"Option\"."
+            'Provide text as a positional arg or --text. Example: buse b1 select-dropdown 5 "Option".'
         )
     if index is None and element_id is None and element_class is None:
         raise typer.BadParameter(
-            "Provide an index or --id/--class. Example: buse b1 select-dropdown 5 \"Option\"."
+            'Provide an index or --id/--class. Example: buse b1 select-dropdown 5 "Option".'
         )
     params = {"text": resolved_text}
     if index is not None:
@@ -1413,11 +1886,11 @@ def go_back(ctx: typer.Context):
 
 @instance_app.command(
     help="Scroll the page or an element.",
-    epilog="Examples: buse b1 scroll --pages 2 | buse b1 scroll --index 12 --pages 0.5",
+    epilog="Examples: buse b1 scroll --pages 2 | buse b1 scroll --up --pages 1 | buse b1 scroll --index 12 --pages 0.5",
 )
 def scroll(
     ctx: typer.Context,
-    down: bool = True,
+    down: bool = typer.Option(True, "--down/--up"),
     pages: float = 1.0,
     index: Optional[int] = typer.Option(None),
 ):
@@ -1556,7 +2029,14 @@ def save_state(ctx: typer.Context, path: str):
 
         session_info = session_manager.get_session(instance_id)
         if session_info is None:
-            _output_error("save_state", {"path": path}, f"Instance {instance_id} not found.")
+            _output_error(
+                "save_state",
+                {"path": path},
+                f"Instance {instance_id} not found.",
+                error_details=_build_error_details(
+                    "session", retryable=False, instance_id=instance_id
+                ),
+            )
             sys.exit(1)
         browser_session = BrowserSession(cdp_url=session_info.cdp_url)
         await browser_session.start()
@@ -1577,7 +2057,7 @@ def save_state(ctx: typer.Context, path: str):
 
 @instance_app.command(
     help="Extract structured data using LLM.",
-    epilog="Example: buse b1 extract \"List all form fields\"",
+    epilog='Example: buse b1 extract "List all form fields"',
 )
 def extract(ctx: typer.Context, query: str):
     from browser_use.llm.openai.chat import ChatOpenAI
@@ -1596,7 +2076,7 @@ def extract(ctx: typer.Context, query: str):
 
 @instance_app.command(
     help="Execute custom JavaScript.",
-    epilog="Example: buse b1 evaluate \"(function(){return document.title})()\"",
+    epilog='Example: buse b1 evaluate "(function(){return document.title})()"',
 )
 def evaluate(ctx: typer.Context, code: str):
     asyncio.run(
@@ -1617,7 +2097,14 @@ def stop(ctx: typer.Context):
     instance_id = ctx.obj["instance_id"]
     if session_manager.get_session(instance_id) is None:
         asyncio.run(_stop_cached_browser_session(instance_id))
-        _output_error("stop", {}, f"Instance {instance_id} not found.")
+        _output_error(
+            "stop",
+            {},
+            f"Instance {instance_id} not found.",
+            error_details=_build_error_details(
+                "session", retryable=False, instance_id=instance_id
+            ),
+        )
         sys.exit(1)
     asyncio.run(_stop_cached_browser_session(instance_id))
     session_manager.stop_session(instance_id)
@@ -1717,9 +2204,16 @@ def _run(args: list[str]) -> None:
         )
     except Exception as e:
         if not isinstance(e, SystemExit):
-            from rich import print as rprint
-
-            rprint(f"[bold red]Error:[/bold red] {e}")
+            _output_error(
+                "cli",
+                {},
+                str(e),
+                error_details=_build_error_details(
+                    "cli",
+                    exception_type=type(e).__name__,
+                    args=args,
+                ),
+            )
             sys.exit(1)
 
 

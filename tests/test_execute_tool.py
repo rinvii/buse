@@ -341,6 +341,8 @@ async def test_execute_tool_coerces_index_message_to_error(capsys):
 
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
+    assert captured["error_details"]["stage"] == "execute_tool"
+    assert captured["error_details"]["context"]["action"] == "click"
     assert "buse <id> observe" in captured["error"]
 
 

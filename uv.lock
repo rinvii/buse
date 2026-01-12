@@ -254,12 +254,13 @@ wheels = [
 
 [[package]]
 name = "buse"
-version = "0.2.3"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "browser-use" },
     { name = "httpx" },
+    { name = "pillow" },
     { name = "psutil" },
     { name = "pydantic" },
     { name = "rich" },
@@ -279,13 +280,14 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.75.0" },
     { name = "browser-use", specifier = ">=0.11.2" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pillow", specifier = ">=10.0.0" },
     { name = "psutil", specifier = ">=7.2.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=5.0.0" },
     { name = "rich", specifier = ">=14.2.0" },
-    { name = "toon-format", specifier = ">=0.1.0" },
+    { name = "toon-format", git = "https://github.com/toon-format/toon-python.git" },
     { name = "typer", specifier = ">=0.21.1" },
 ]
 provides-extras = ["test"]
@@ -4793,11 +4795,7 @@ wheels = [
 [[package]]
 name = "toon-format"
 version = "0.9.0b1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fa/15/d23d6d3e36aa4ec96dd5692bc7715fe17015b669e8f0d1c5c7fa906a3ceb/toon_format-0.9.0b1.tar.gz", hash = "sha256:8f391dd6ad9677c78366bd8eb6762d064a2183f67b9b7da1f348fdb6ee8738e7", size = 87398, upload-time = "2025-11-08T19:22:53.059Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/f3/27ab1d982bb81bf9ac5be70b4c774996eb8562b93c77e93c253c22be951f/toon_format-0.9.0b1-py3-none-any.whl", hash = "sha256:efeee919501f91137f017f7bed34789c067f76178111aa872a49bc8653dce3be", size = 36173, upload-time = "2025-11-08T19:22:51.523Z" },
-]
+source = { git = "https://github.com/toon-format/toon-python.git#6b26984a01279defdcf40ab9d09bc418fe8133ac" }
 
 [[package]]
 name = "tqdm"

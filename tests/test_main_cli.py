@@ -37,16 +37,52 @@ class FakeTab:
         self.url = url
 
 
+class FakeEvent:
+    def __init__(self, session, include_screenshot: bool):
+        self._session = session
+        self._include_screenshot = include_screenshot
+
+    async def event_result(self, **_kwargs):
+        return await self._session.get_browser_state_summary(
+            include_screenshot=self._include_screenshot
+        )
+
+
+class FakeEventBus:
+    def __init__(self, session):
+        self._session = session
+
+    def dispatch(self, event):
+        include_screenshot = bool(getattr(event, "include_screenshot", False))
+        return FakeEvent(self._session, include_screenshot)
+
+
 class FakeBrowserSession:
     def __init__(self, cdp_url=None):
         self.cdp_url = cdp_url
         self.agent_focus_target_id = "focus"
+        self.event_bus = FakeEventBus(self)
 
     async def start(self):
         return None
 
     async def stop(self):
         return None
+
+    async def get_or_create_cdp_session(self):
+        async def evaluate(params, session_id):
+            return {
+                "result": {
+                    "value": {"width": 1280, "height": 720, "device_pixel_ratio": 1.0}
+                }
+            }
+
+        return SimpleNamespace(
+            session_id="s1",
+            cdp_client=SimpleNamespace(
+                send=SimpleNamespace(Runtime=SimpleNamespace(evaluate=evaluate))
+            ),
+        )
 
     async def get_browser_state_summary(self, include_screenshot=False, cached=False):
         screenshot = (
@@ -79,13 +115,13 @@ def patch_execute_tool(monkeypatch):
 def test_observe_no_session(monkeypatch):
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: None)
     with pytest.raises(SystemExit):
-        main.observe(DummyCtx(), screenshot=False)
+        main.observe(DummyCtx(), screenshot=False, path=None, omniparser=False)
 
 
 def test_observe_no_session_outputs_error(monkeypatch, capsys):
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: None)
     with pytest.raises(SystemExit):
-        main.observe(DummyCtx(), screenshot=False)
+        main.observe(DummyCtx(), screenshot=False, path=None, omniparser=False)
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is False
 
@@ -97,7 +133,7 @@ def test_observe_with_screenshot(monkeypatch, tmp_path, capsys):
         lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)),
     )
     monkeypatch.setattr("browser_use.browser.BrowserSession", FakeBrowserSession)
-    main.observe(DummyCtx(), screenshot=True)
+    main.observe(DummyCtx(), screenshot=True, path=None, omniparser=False)
     out = json.loads(capsys.readouterr().out)
     assert out["screenshot_path"] is not None
 
@@ -117,7 +153,25 @@ def test_observe_without_dom_state(monkeypatch, tmp_path, capsys):
         lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)),
     )
     monkeypatch.setattr("browser_use.browser.BrowserSession", NoDomSession)
-    main.observe(DummyCtx(), screenshot=False)
+    main.observe(DummyCtx(), screenshot=False, path=None, omniparser=False)
+    out = json.loads(capsys.readouterr().out)
+    assert out["dom_minified"] == ""
+
+
+def test_observe_no_dom_flag(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        main.session_manager,
+        "get_session",
+        lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)),
+    )
+    monkeypatch.setattr("browser_use.browser.BrowserSession", FakeBrowserSession)
+    main.observe(
+        DummyCtx(),
+        screenshot=False,
+        path=None,
+        omniparser=False,
+        no_dom=True,
+    )
     out = json.loads(capsys.readouterr().out)
     assert out["dom_minified"] == ""
 
@@ -130,7 +184,7 @@ def test_observe_profile(monkeypatch, tmp_path, capsys):
     )
     monkeypatch.setattr("browser_use.browser.BrowserSession", FakeBrowserSession)
     main.state.profile = True
-    main.observe(DummyCtx(), screenshot=False)
+    main.observe(DummyCtx(), screenshot=False, path=None, omniparser=False)
     out = json.loads(capsys.readouterr().out)
     assert "profile" in out
     main.state.profile = False
@@ -173,8 +227,6 @@ def test_basic_commands(monkeypatch, tmp_path):
         "send_keys",
         "find_text",
     ]
-
-    import os
 
     assert calls[11][2]["index"] == 1
     assert calls[11][2]["path"] == str(f)
