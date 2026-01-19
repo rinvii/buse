@@ -240,7 +240,7 @@ async def get_observation(
                 ext = "png"
                 if not path:
                     shot_dir = Path(session_info.user_data_dir) / "screenshots"
-                    shot_dir.mkdir(exist_ok=True)
+                    shot_dir.mkdir(exist_ok=True, parents=True)
                     screenshot_path = str(shot_dir / f"last_state.{ext}")
                 else:
                     p = Path(path)
