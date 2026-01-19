@@ -247,5 +247,5 @@ https://docs.browser-use.com/introduction
 
 - Support all operating systems: Windows, macOS, Linux (right now works on my 10.15 macOS and Windows 11)
 - Add automation scripting examples
-- Add MCP support
+- Add e2e tests
 - Add optional daemon for persistent background sessions
