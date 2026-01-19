@@ -14,6 +14,14 @@ def reset_caches(monkeypatch):
     main._file_systems.clear()
     main._selector_cache.clear()
     monkeypatch.delenv("BUSE_SELECTOR_CACHE_TTL", raising=False)
+
+    monkeypatch.setattr(main, "BrowserSession", FakeBrowserSession)
+
+    class FakeFileSystem:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(main, "FileSystem", FakeFileSystem)
     yield
 
 
@@ -398,6 +406,7 @@ def test_save_state(monkeypatch, tmp_path, capsys):
         lambda _: SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path)),
     )
     monkeypatch.setattr("browser_use.browser.BrowserSession", FakeBrowserSession)
+    monkeypatch.setattr(main, "BrowserSession", FakeBrowserSession)
     main.save_state(DummyCtx(), "state.json")
     out = json.loads(capsys.readouterr().out)
     assert out["cookies_count"] == 1

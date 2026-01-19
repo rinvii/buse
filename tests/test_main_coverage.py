@@ -78,9 +78,7 @@ def _make_cdp_session(
         Runtime=SimpleNamespace(evaluate=evaluate),
         Page=SimpleNamespace(captureScreenshot=capture_screenshot),
     )
-    return SimpleNamespace(
-        session_id="s1", cdp_client=SimpleNamespace(send=send)
-    )
+    return SimpleNamespace(session_id="s1", cdp_client=SimpleNamespace(send=send))
 
 
 class FakeBrowserSession:
@@ -179,6 +177,9 @@ def reset_globals(monkeypatch):
     main._omniparser_probe_cache.clear()
     monkeypatch.delenv("BUSE_IMAGE_QUALITY", raising=False)
     monkeypatch.delenv("BUSE_OMNIPARSER_URL", raising=False)
+
+    monkeypatch.setattr(main, "BrowserSession", FakeBrowserSession)
+
     yield
     main.state.profile = False
 
@@ -331,9 +332,7 @@ def test_observe_omniparser_success(monkeypatch, tmp_path, capsys):
         "AsyncClient",
         lambda **kwargs: FakeAsyncClient(response=FakeResponse(status_code=200)),
     )
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     screenshot_data = base64.b64encode(b"img").decode("ascii")
     summary = _make_summary(screenshot=screenshot_data)
@@ -341,7 +340,8 @@ def test_observe_omniparser_success(monkeypatch, tmp_path, capsys):
         viewport_value={"width": 100, "height": 200, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
 
@@ -362,9 +362,7 @@ def test_observe_omniparser_success(monkeypatch, tmp_path, capsys):
     fake_client.analysis = analysis
     fake_client.som_image = base64.b64encode(b"som").decode("ascii")
 
-    monkeypatch.setattr(
-        "buse.vision.VisionClient", lambda server_url=None: fake_client
-    )
+    monkeypatch.setattr("buse.vision.VisionClient", lambda server_url=None: fake_client)
     monkeypatch.setattr("buse.utils.downscale_image", lambda *a, **k: a[0])
     main.state.profile = True
 
@@ -384,16 +382,15 @@ def test_observe_omniparser_success(monkeypatch, tmp_path, capsys):
 
 
 def test_observe_timeout_twice(monkeypatch, tmp_path, capsys):
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     timeout_exc = RuntimeError("timeout")
     cdp_session = _make_cdp_session(
         viewport_value={"width": 1, "height": 1, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession(
             [timeout_exc, timeout_exc], cdp_session
         ),
@@ -410,18 +407,15 @@ def test_observe_timeout_twice(monkeypatch, tmp_path, capsys):
 
 
 def test_observe_non_timeout_error(monkeypatch, tmp_path, capsys):
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     cdp_session = _make_cdp_session(
         viewport_value={"width": 1, "height": 1, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
-        lambda cdp_url=None: FakeBrowserSession(
-            [RuntimeError("boom")], cdp_session
-        ),
+        main,
+        "BrowserSession",
+        lambda cdp_url=None: FakeBrowserSession([RuntimeError("boom")], cdp_session),
     )
     with pytest.raises(SystemExit):
         main.observe(
@@ -435,16 +429,13 @@ def test_observe_non_timeout_error(monkeypatch, tmp_path, capsys):
 
 
 def test_observe_cdp_access_error(monkeypatch, tmp_path, capsys):
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=None)
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
-        lambda cdp_url=None: FakeBrowserSession(
-            [summary], RuntimeError("no cdp")
-        ),
+        main,
+        "BrowserSession",
+        lambda cdp_url=None: FakeBrowserSession([summary], RuntimeError("no cdp")),
     )
     with pytest.raises(SystemExit):
         main.observe(
@@ -458,9 +449,7 @@ def test_observe_cdp_access_error(monkeypatch, tmp_path, capsys):
 
 
 def test_observe_cdp_capture_no_data_profile(monkeypatch, tmp_path):
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=None)
     cdp_session = _make_cdp_session(
@@ -468,7 +457,8 @@ def test_observe_cdp_capture_no_data_profile(monkeypatch, tmp_path):
         capture_result={"data": ""},
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     main.state.profile = True
@@ -481,14 +471,10 @@ def test_observe_cdp_capture_no_data_profile(monkeypatch, tmp_path):
     )
 
 
-def test_observe_omniparser_missing_screenshot_with_cdp_error(
-    monkeypatch, tmp_path
-):
+def test_observe_omniparser_missing_screenshot_with_cdp_error(monkeypatch, tmp_path):
     monkeypatch.setenv("BUSE_OMNIPARSER_URL", "http://example")
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=None)
     cdp_session = _make_cdp_session(
@@ -496,7 +482,8 @@ def test_observe_omniparser_missing_screenshot_with_cdp_error(
         capture_exc=RuntimeError("snap failed"),
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     with pytest.raises(SystemExit):
@@ -510,16 +497,15 @@ def test_observe_omniparser_missing_screenshot_with_cdp_error(
 
 
 def test_observe_no_dom_timeout_retry(monkeypatch, tmp_path):
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     timeout_exc = RuntimeError("timeout")
     cdp_session = _make_cdp_session(
         viewport_value={"width": 1, "height": 1, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession(
             [timeout_exc, timeout_exc], cdp_session
         ),
@@ -537,14 +523,13 @@ def test_observe_no_dom_timeout_retry(monkeypatch, tmp_path):
 def test_observe_omniparser_missing_viewport(monkeypatch, tmp_path):
     monkeypatch.setenv("BUSE_OMNIPARSER_URL", "http://example")
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=base64.b64encode(b"img").decode("ascii"))
     cdp_session = _make_cdp_session(viewport_value=None)
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     with pytest.raises(SystemExit):
@@ -558,9 +543,7 @@ def test_observe_omniparser_missing_viewport(monkeypatch, tmp_path):
 
 
 def test_observe_cdp_capture_sets_screenshot(monkeypatch, tmp_path):
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=None)
     capture_data = base64.b64encode(b"shot").decode("ascii")
@@ -569,7 +552,8 @@ def test_observe_cdp_capture_sets_screenshot(monkeypatch, tmp_path):
         capture_result={"data": capture_data},
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     main.observe(
@@ -586,24 +570,21 @@ def test_observe_cdp_capture_sets_screenshot(monkeypatch, tmp_path):
 def test_observe_omniparser_analyze_empty_elements(monkeypatch, tmp_path):
     monkeypatch.setenv("BUSE_OMNIPARSER_URL", "http://example")
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=base64.b64encode(b"img").decode("ascii"))
     cdp_session = _make_cdp_session(
         viewport_value={"width": 10, "height": 10, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     fake_client = FakeVisionClient()
     fake_client.analysis = VisualAnalysis(elements=[])
     fake_client.som_image = ""
-    monkeypatch.setattr(
-        "buse.vision.VisionClient", lambda server_url=None: fake_client
-    )
+    monkeypatch.setattr("buse.vision.VisionClient", lambda server_url=None: fake_client)
     monkeypatch.setattr("buse.utils.downscale_image", lambda *a, **k: a[0])
     main.state.profile = True
     with pytest.raises(SystemExit):
@@ -619,16 +600,15 @@ def test_observe_omniparser_analyze_empty_elements(monkeypatch, tmp_path):
 def test_observe_omniparser_analyze_error(monkeypatch, tmp_path):
     monkeypatch.setenv("BUSE_OMNIPARSER_URL", "http://example")
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=base64.b64encode(b"img").decode("ascii"))
     cdp_session = _make_cdp_session(
         viewport_value={"width": 10, "height": 10, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
 
@@ -653,16 +633,15 @@ def test_observe_omniparser_analyze_error(monkeypatch, tmp_path):
 def test_observe_omniparser_path_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("BUSE_OMNIPARSER_URL", "http://example")
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=base64.b64encode(b"img").decode("ascii"))
     cdp_session = _make_cdp_session(
         viewport_value={"width": 10, "height": 10, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     fake_client = FakeVisionClient()
@@ -680,9 +659,7 @@ def test_observe_omniparser_path_dir(monkeypatch, tmp_path):
         ]
     )
     fake_client.som_image = ""
-    monkeypatch.setattr(
-        "buse.vision.VisionClient", lambda server_url=None: fake_client
-    )
+    monkeypatch.setattr("buse.vision.VisionClient", lambda server_url=None: fake_client)
     monkeypatch.setattr("buse.utils.downscale_image", lambda *a, **k: a[0])
     shots_dir = tmp_path / "shots"
     shots_dir.mkdir()
@@ -699,16 +676,15 @@ def test_observe_omniparser_path_dir(monkeypatch, tmp_path):
 def test_observe_omniparser_missing_image_data(monkeypatch, tmp_path):
     monkeypatch.setenv("BUSE_OMNIPARSER_URL", "http://example")
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=base64.b64encode(b"img").decode("ascii"))
     cdp_session = _make_cdp_session(
         viewport_value={"width": 10, "height": 10, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     fake_client = FakeVisionClient()
@@ -726,9 +702,7 @@ def test_observe_omniparser_missing_image_data(monkeypatch, tmp_path):
         ]
     )
     fake_client.som_image = ""
-    monkeypatch.setattr(
-        "buse.vision.VisionClient", lambda server_url=None: fake_client
-    )
+    monkeypatch.setattr("buse.vision.VisionClient", lambda server_url=None: fake_client)
     monkeypatch.setattr("buse.utils.downscale_image", lambda *a, **k: None)
     with pytest.raises(SystemExit):
         main.observe(
@@ -741,16 +715,15 @@ def test_observe_omniparser_missing_image_data(monkeypatch, tmp_path):
 
 
 def test_observe_screenshot_path_file(monkeypatch, tmp_path):
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=base64.b64encode(b"img").decode("ascii"))
     cdp_session = _make_cdp_session(
         viewport_value={"width": 1, "height": 1, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     out_path = tmp_path / "shots" / "state.png"
@@ -765,16 +738,15 @@ def test_observe_screenshot_path_file(monkeypatch, tmp_path):
 
 
 def test_observe_screenshot_path_dir(monkeypatch, tmp_path):
-    session_info = SimpleNamespace(
-        cdp_url="x", user_data_dir=str(tmp_path)
-    )
+    session_info = SimpleNamespace(cdp_url="x", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
     summary = _make_summary(screenshot=base64.b64encode(b"img").decode("ascii"))
     cdp_session = _make_cdp_session(
         viewport_value={"width": 1, "height": 1, "device_pixel_ratio": 1.0}
     )
     monkeypatch.setattr(
-        "browser_use.browser.BrowserSession",
+        main,
+        "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
     shots_dir = tmp_path / "shots"

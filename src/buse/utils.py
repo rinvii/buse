@@ -31,9 +31,8 @@ def _serialize(obj: Any) -> Any:
         obj = obj.model_dump()
 
     if isinstance(obj, dict):
-        # Optimization: Flatten bbox lists into strings for tabular format
         if "bbox" in obj and isinstance(obj["bbox"], list):
-            obj = dict(obj)  # copy to avoid modifying original if possible
+            obj = dict(obj)
             obj["bbox"] = ",".join(map(str, obj["bbox"]))
         return {k: _serialize(v) for k, v in obj.items()}
     if isinstance(obj, list):

@@ -13,8 +13,9 @@ from typing import Optional, Any
 import typer
 
 from .models import ActionResult, Observation, TabInfo
+from .mcp_server import BuseMCPServer
 from .session import SessionManager
-from .utils import OutputFormat, handle_errors, output_data, state
+from .utils import OutputFormat, handle_errors, output_data, state, _serialize
 
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ["BROWSER_USE_LOGGING_LEVEL"] = "critical"
@@ -28,6 +29,438 @@ logging.disable(logging.CRITICAL)
 
 session_manager = SessionManager()
 instance_app = typer.Typer(no_args_is_help=True)
+
+
+async def get_observation(
+    instance_id: str,
+    screenshot: bool = False,
+    path: Optional[str] = None,
+    omniparser: bool = False,
+    no_dom: bool = False,
+) -> dict:
+    if omniparser and not os.getenv("BUSE_OMNIPARSER_URL"):
+        raise ValueError(
+            "BUSE_OMNIPARSER_URL environment variable is required when using --omniparser."
+        )
+    quality_override = _parse_image_quality(None)
+    endpoint = None
+    if omniparser:
+        endpoint = _normalize_omniparser_endpoint(os.getenv("BUSE_OMNIPARSER_URL", ""))
+        if _should_probe_omniparser(endpoint):
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.get(f"{endpoint}/probe/")
+                    resp.raise_for_status()
+                _mark_omniparser_probe(endpoint)
+            except Exception as e:
+                raise RuntimeError(f"OmniParser probe failed: {e}")
+
+    start_session = time.perf_counter()
+    session_info = session_manager.get_session(instance_id)
+    get_session_ms = (time.perf_counter() - start_session) * 1000.0
+    if not session_info:
+        await _stop_cached_browser_session(instance_id)
+        raise ValueError(f"Instance {instance_id} not found.")
+
+    start_browser = time.perf_counter()
+    browser_session, _ = await _get_browser_session(instance_id, session_info)
+    get_browser_session_ms = (time.perf_counter() - start_browser) * 1000.0
+
+    try:
+        profile_extra: dict[str, float] = {}
+        start_state = time.perf_counter()
+        include_screenshot = screenshot
+
+        try:
+            if no_dom:
+                from browser_use.browser.events import BrowserStateRequestEvent
+
+                event = browser_session.event_bus.dispatch(
+                    BrowserStateRequestEvent(
+                        include_dom=False, include_screenshot=include_screenshot
+                    )
+                )
+                state_summary = await asyncio.wait_for(
+                    event.event_result(raise_if_none=True, raise_if_any=True),
+                    timeout=30.0,
+                )
+            else:
+                state_summary = await asyncio.wait_for(
+                    browser_session.get_browser_state_summary(
+                        include_screenshot=include_screenshot
+                    ),
+                    timeout=30.0,
+                )
+        except Exception as e:
+            if "timeout" in str(e).lower() and include_screenshot:
+                if no_dom:
+                    from browser_use.browser.events import BrowserStateRequestEvent
+
+                    event = browser_session.event_bus.dispatch(
+                        BrowserStateRequestEvent(
+                            include_dom=False, include_screenshot=include_screenshot
+                        )
+                    )
+                    state_summary = await asyncio.wait_for(
+                        event.event_result(raise_if_none=True, raise_if_any=True),
+                        timeout=30.0,
+                    )
+                else:
+                    state_summary = await asyncio.wait_for(
+                        browser_session.get_browser_state_summary(
+                            include_screenshot=include_screenshot
+                        ),
+                        timeout=30.0,
+                    )
+            else:
+                raise
+
+        state_ms = (time.perf_counter() - start_state) * 1000.0
+        if not no_dom:
+            _selector_cache[instance_id] = time.time()
+        focused_id = browser_session.agent_focus_target_id
+        screenshot_data = state_summary.screenshot
+        cdp_screenshot_error = None
+        needs_screenshot = screenshot or omniparser
+        omniparser_shot_dir = None
+        omniparser_image_data = None
+        som_path = None
+
+        viewport_data = None
+        try:
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            viewport_res = await asyncio.wait_for(
+                cdp_session.cdp_client.send.Runtime.evaluate(
+                    params={
+                        "expression": "({width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio})",
+                        "returnByValue": True,
+                    },
+                    session_id=cdp_session.session_id,
+                ),
+                timeout=5.0,
+            )
+            viewport_data = viewport_res.get("result", {}).get("value")
+            if needs_screenshot and not screenshot_data:
+                capture = await asyncio.wait_for(
+                    cdp_session.cdp_client.send.Page.captureScreenshot(
+                        params={"format": "png"},
+                        session_id=cdp_session.session_id,
+                    ),
+                    timeout=15.0,
+                )
+                capture_data = (
+                    capture.get("data") if isinstance(capture, dict) else None
+                )
+                if isinstance(capture_data, str) and capture_data:
+                    screenshot_data = capture_data
+                else:
+                    cdp_screenshot_error = "CDP capture returned no data"
+        except Exception as e:
+            if not screenshot_data and needs_screenshot:
+                raise RuntimeError(f"CDP access failed: {e}")
+
+        viewport = None
+        if viewport_data:
+            from .models import ViewportInfo
+
+            viewport = ViewportInfo(**viewport_data)
+
+        omniparser_quality = quality_override if quality_override is not None else 95
+        som_quality = quality_override if quality_override is not None else 75
+        visual_analysis = None
+
+        if omniparser:
+            omniparser_start = time.perf_counter() if state.profile else None
+            if not screenshot_data:
+                raise RuntimeError(
+                    f"Missing screenshot for OmniParser. CDP error: {cdp_screenshot_error}"
+                )
+            if not viewport:
+                raise RuntimeError("Missing viewport for OmniParser")
+
+            omniparser_shot_dir = Path(session_info.user_data_dir) / "screenshots"
+            if path:
+                p = Path(path)
+                if p.is_dir() or not p.suffix:
+                    omniparser_shot_dir = p
+                else:
+                    omniparser_shot_dir = p.parent
+            if omniparser_shot_dir:
+                omniparser_shot_dir.mkdir(exist_ok=True, parents=True)
+
+            from .vision import VisionClient
+            from .utils import downscale_image
+
+            client = VisionClient(server_url=endpoint)
+            omniparser_image_data = downscale_image(
+                screenshot_data, quality=omniparser_quality
+            )
+            analysis, som_image_base64 = await asyncio.wait_for(
+                client.analyze(omniparser_image_data, viewport), timeout=60.0
+            )
+
+            if not analysis.elements:
+                raise RuntimeError("OmniParser returned no elements")
+
+            if som_image_base64 and omniparser_shot_dir:
+                som_image_base64 = downscale_image(
+                    som_image_base64, quality=som_quality
+                )
+                som_path = str(omniparser_shot_dir / "image_som.jpg")
+                client.save_som_image(som_image_base64, som_path)
+                analysis.som_image_path = som_path
+
+            visual_analysis = analysis
+            if omniparser_start is not None:
+                profile_extra["omniparser_total_ms"] = (
+                    time.perf_counter() - omniparser_start
+                ) * 1000.0
+
+        start_tabs = time.perf_counter()
+        tabs = [
+            TabInfo(id=t.target_id, title=t.title, url=t.url)
+            for t in await browser_session.get_tabs()
+        ]
+        tabs_ms = (time.perf_counter() - start_tabs) * 1000.0
+
+        screenshot_path = None
+        screenshot_ms = 0.0
+
+        if (screenshot or omniparser) and screenshot_data:
+            start_shot = time.perf_counter()
+            write_path = None
+            if omniparser and omniparser_shot_dir:
+                shot_data = omniparser_image_data
+
+                write_path = str(omniparser_shot_dir / "image.jpg")
+
+                screenshot_path = som_path or write_path
+            else:
+                shot_data = screenshot_data
+                ext = "png"
+                if not path:
+                    shot_dir = Path(session_info.user_data_dir) / "screenshots"
+                    shot_dir.mkdir(exist_ok=True)
+                    screenshot_path = str(shot_dir / f"last_state.{ext}")
+                else:
+                    p = Path(path)
+                    if p.is_dir():
+                        p.mkdir(exist_ok=True, parents=True)
+                        screenshot_path = str(p / f"last_state.{ext}")
+                    else:
+                        if p.parent:
+                            p.parent.mkdir(exist_ok=True, parents=True)
+                        screenshot_path = str(p)
+                write_path = screenshot_path
+
+            if write_path and shot_data:
+                with open(write_path, "wb") as f:
+                    f.write(base64.b64decode(shot_data))
+                screenshot_ms = (time.perf_counter() - start_shot) * 1000.0
+
+        obs = Observation(
+            session_id=instance_id,
+            url=state_summary.url,
+            title=state_summary.title,
+            visual_analysis=visual_analysis,
+            tabs=tabs,
+            viewport=viewport,
+            screenshot_path=screenshot_path,
+            dom_minified=(
+                ""
+                if no_dom
+                else state_summary.dom_state.llm_representation()
+                if state_summary.dom_state
+                else ""
+            ),
+        )
+
+        data = obs.model_dump()
+        data["focused_tab_id"] = focused_id
+        if state.profile:
+            data["profile"] = {
+                "get_session_ms": get_session_ms,
+                "get_browser_session_ms": get_browser_session_ms,
+                "get_state_ms": state_ms,
+                "get_tabs_ms": tabs_ms,
+                "write_screenshot_ms": screenshot_ms,
+                **profile_extra,
+            }
+
+        return data
+
+    finally:
+        if not _should_keep_session():
+            await _stop_cached_browser_session(instance_id)
+
+
+async def run_save_state(instance_id: str, path: str) -> dict:
+    session_info = session_manager.get_session(instance_id)
+    if session_info is None:
+        await _stop_cached_browser_session(instance_id)
+        raise ValueError(f"Instance {instance_id} not found.")
+
+    browser_session = BrowserSession(cdp_url=session_info.cdp_url)
+    await browser_session.start()
+    try:
+        state_data = await browser_session.export_storage_state(output_path=path)
+        return {
+            "success": True,
+            "path": path,
+            "cookies_count": len(state_data.get("cookies", [])),
+        }
+    finally:
+        try:
+            await asyncio.wait_for(browser_session.stop(), timeout=10.0)
+        except Exception:
+            pass
+
+
+async def run_stop(instance_id: str) -> dict:
+    if session_manager.get_session(instance_id) is None:
+        await _stop_cached_browser_session(instance_id)
+        raise ValueError(f"Instance {instance_id} not found.")
+    await _stop_cached_browser_session(instance_id)
+    session_manager.stop_session(instance_id)
+    return {"message": f"Stopped {instance_id}", "success": True}
+
+
+async def run_start(instance_id: str) -> dict:
+    existing = session_manager.get_session(instance_id)
+    if existing:
+        return {
+            "message": f"Instance {instance_id} already running",
+            "already_running": True,
+            "success": True,
+        }
+    session_manager.start_session(instance_id)
+    return {
+        "message": f"Initialized {instance_id}",
+        "already_running": False,
+        "success": True,
+    }
+
+
+def _parse_bool_env(name: str) -> Optional[bool]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+server_app = typer.Typer(no_args_is_help=False)
+
+
+def _format_mcp_output(result: Any) -> Any:
+    dumped = _serialize(result)
+    if state.format == OutputFormat.toon:
+        import toon_format as toon
+
+        return toon.encode(dumped)
+    return dumped
+
+
+def _make_mcp_tool_handler():
+    async def tool_handler(instance_id: str, action_name: str, **kwargs):
+        action_label = kwargs.pop("action_label", None)
+        if action_name == "save_state":
+            result = await run_save_state(instance_id, **kwargs)
+            return _format_mcp_output(result)
+        if action_name == "stop":
+            result = await run_stop(instance_id)
+            return _format_mcp_output(result)
+        if action_name == "start":
+            result = await run_start(instance_id)
+            return _format_mcp_output(result)
+        result = await execute_tool(
+            instance_id,
+            action_name,
+            kwargs,
+            return_result=True,
+            action_label=action_label,
+        )
+        if hasattr(result, "model_dump"):
+            result = result.model_dump()
+        return _format_mcp_output(result)
+
+    return tool_handler
+
+
+def _make_mcp_observation_handler():
+    async def observation_handler(
+        instance_id: str,
+        screenshot: bool = False,
+        no_dom: bool = False,
+        omniparser: bool = False,
+    ):
+        result = await get_observation(
+            instance_id,
+            screenshot=screenshot,
+            no_dom=no_dom,
+            omniparser=omniparser,
+        )
+        return _format_mcp_output(result)
+
+    return observation_handler
+
+
+@server_app.callback(invoke_without_command=True)
+def run_mcp_server(
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="Host/address for the MCP server."
+    ),
+    port: int = typer.Option(
+        8000, "--port", help="Port for the MCP server (default: 8000)."
+    ),
+    transport: str = typer.Option(
+        "streamable-http",
+        "--transport",
+        help="MCP transport (stdio, streamable-http, or sse).",
+    ),
+    name: str = typer.Option("buse", "--name", help="Name reported by the MCP server."),
+    stateless: bool = typer.Option(
+        True,
+        "--stateless/--stateful",
+        help="Run the MCP server as stateless HTTP (default: stateless).",
+    ),
+    json_response: bool = typer.Option(
+        True,
+        "--json-response/--no-json-response",
+        help="Wrap responses as JSON (default: true).",
+    ),
+    allow_remote: bool = typer.Option(
+        _parse_bool_env("BUSE_MCP_ALLOW_REMOTE") or False,
+        "--allow-remote",
+        help="Permit non-local clients (default: local-only).",
+    ),
+    auth_token: Optional[str] = typer.Option(
+        os.getenv("BUSE_MCP_AUTH_TOKEN"),
+        "--auth-token",
+        help="Require a Bearer or X-Buse-Token header for MCP access.",
+    ),
+    output_format: OutputFormat = typer.Option(
+        OutputFormat.json,
+        "--format",
+        "-f",
+        help="Output format for tool results (json or toon).",
+    ),
+):
+    """Run a minimal MCP server that exposes active buse sessions."""
+    state.format = output_format
+
+    server = BuseMCPServer(
+        session_manager,
+        server_name=name,
+        stateless_http=stateless,
+        json_response=json_response,
+        allow_remote=allow_remote,
+        auth_token=auth_token,
+        tool_handler=_make_mcp_tool_handler(),
+        observation_handler=_make_mcp_observation_handler(),
+    )
+    server.run(host=host, port=port, transport=transport)
+
+
 _browser_sessions = {}
 _file_systems = {}
 _controllers = {}
@@ -336,22 +769,29 @@ def _should_keep_session() -> bool:
 async def _stop_cached_browser_session(instance_id: str) -> None:
     browser_session = _browser_sessions.pop(instance_id, None)
     if browser_session is not None:
-        await browser_session.stop()
+        try:
+            await asyncio.wait_for(browser_session.stop(), timeout=10.0)
+        except Exception:
+            pass
     _file_systems.pop(instance_id, None)
     _controllers.pop(instance_id, None)
     _selector_cache.pop(instance_id, None)
 
 
-async def _get_browser_session(instance_id: str, session_info):
-    from browser_use.browser import BrowserSession
-    from browser_use.filesystem.file_system import FileSystem
+from browser_use.browser import BrowserSession  # noqa: E402
+from browser_use.filesystem.file_system import FileSystem  # noqa: E402
 
+
+async def _get_browser_session(instance_id: str, session_info):
     browser_session = _browser_sessions.get(instance_id)
     file_system = _file_systems.get(instance_id)
 
     if browser_session is None:
         browser_session = BrowserSession(cdp_url=session_info.cdp_url)
-        await browser_session.start()
+        try:
+            await asyncio.wait_for(browser_session.start(), timeout=30.0)
+        except Exception:
+            raise RuntimeError("Failed to start browser session (timeout or error)")
         _browser_sessions[instance_id] = browser_session
 
     if file_system is None:
@@ -488,18 +928,25 @@ class ResultEmitter:
         pass
 
     def __init__(
-        self, defer_output: bool, params_for_hint: dict, profile: dict
+        self,
+        defer_output: bool,
+        params_for_hint: dict,
+        profile: dict,
+        suppress_output: bool = False,
     ) -> None:
         self.defer_output = defer_output
+        self.suppress_output = suppress_output
         self.params_for_hint = params_for_hint
         self.profile = profile
         self.result_payload = None
         self.exit_code = 0
 
     def _emit(self, payload, code: int = 0) -> None:
+        self.result_payload = payload
+        self.exit_code = code
+        if self.suppress_output:
+            return
         if self.defer_output:
-            self.result_payload = payload
-            self.exit_code = code
             return
         output_data(payload)
         if code:
@@ -557,10 +1004,12 @@ class ResultEmitter:
         self, action: str, message: str, error_details: Optional[dict[str, Any]] = None
     ) -> None:
         self.emit_error(action, message, error_details=error_details)
-        if self.defer_output:
+        if self.defer_output or self.suppress_output:
             raise ResultEmitter.EarlyExit()
 
     def finalize(self) -> None:
+        if self.suppress_output:
+            return
         if self.defer_output and isinstance(self.result_payload, ActionResult):
             self.result_payload.profile = self.profile if state.profile else None
         if self.defer_output and self.result_payload is not None:
@@ -936,6 +1385,7 @@ async def execute_tool(
     params: dict,
     needs_selector_map: bool = False,
     action_label: Optional[str] = None,
+    return_result: bool = False,
     **extra_kwargs,
 ):
     from browser_use import Controller
@@ -945,7 +1395,9 @@ async def execute_tool(
     defer_output = state.profile
     profiler = Profiler()
     profile = profiler.data
-    emitter = ResultEmitter(defer_output, params_for_hint, profile)
+    emitter = ResultEmitter(
+        defer_output, params_for_hint, profile, suppress_output=return_result
+    )
     start_total = time.perf_counter()
     with profiler.span("get_session_ms"):
         session_info = session_manager.get_session(instance_id)
@@ -1043,6 +1495,7 @@ async def execute_tool(
             hover_index = params.get("index")
             if hover_index is None:
                 emitter.fail(action_name, "Hover requires an element index")
+                return
             start_hover = time.perf_counter()
             try:
                 await _dispatch_hover(browser_session, hover_index)
@@ -1160,6 +1613,8 @@ async def execute_tool(
             await _stop_cached_browser_session(instance_id)
             profile["cleanup_ms"] = (time.perf_counter() - cleanup_start) * 1000.0
     emitter.finalize()
+    if return_result:
+        return emitter.result_payload
 
 
 @instance_app.command(
@@ -1240,6 +1695,7 @@ def observe(
                 ),
             )
             sys.exit(1)
+        assert session_info is not None
         start_browser = time.perf_counter()
         browser_session, _ = await _get_browser_session(instance_id, session_info)
         get_browser_session_ms = (time.perf_counter() - start_browser) * 1000.0
@@ -1328,22 +1784,26 @@ def observe(
 
             try:
                 cdp_session = await browser_session.get_or_create_cdp_session()
-                viewport_res = await cdp_session.cdp_client.send.Runtime.evaluate(
-                    params={
-                        "expression": "({width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio})",
-                        "returnByValue": True,
-                    },
-                    session_id=cdp_session.session_id,
+                viewport_res = await asyncio.wait_for(
+                    cdp_session.cdp_client.send.Runtime.evaluate(
+                        params={
+                            "expression": "({width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio})",
+                            "returnByValue": True,
+                        },
+                        session_id=cdp_session.session_id,
+                    ),
+                    timeout=5.0,
                 )
                 viewport_data = viewport_res.get("result", {}).get("value")
                 if needs_screenshot and not screenshot_data:
                     try:
                         capture_start = time.perf_counter() if state.profile else None
-                        capture = (
-                            await cdp_session.cdp_client.send.Page.captureScreenshot(
+                        capture = await asyncio.wait_for(
+                            cdp_session.cdp_client.send.Page.captureScreenshot(
                                 params={"format": "png"},
                                 session_id=cdp_session.session_id,
-                            )
+                            ),
+                            timeout=15.0,
                         )
                         if capture_start is not None:
                             profile_extra["cdp_screenshot_ms"] = (
@@ -1391,10 +1851,6 @@ def observe(
                         message = (
                             f"{message} CDP screenshot failed: {cdp_screenshot_error}"
                         )
-                    else:
-                        message = (
-                            f"{message} The page might be too slow or unresponsive."
-                        )
                     _output_error(
                         "observe",
                         {"omniparser": True},
@@ -1426,8 +1882,9 @@ def observe(
                     if p.is_dir() or not p.suffix:
                         omniparser_shot_dir = p
                     else:
-                        omniparser_shot_dir = p.parent or omniparser_shot_dir
-                omniparser_shot_dir.mkdir(exist_ok=True, parents=True)
+                        omniparser_shot_dir = p.parent
+                if omniparser_shot_dir:
+                    omniparser_shot_dir.mkdir(exist_ok=True, parents=True)
 
                 from .vision import VisionClient
                 from .utils import downscale_image
@@ -1444,6 +1901,7 @@ def observe(
                             time.perf_counter() - prepare_start
                         ) * 1000.0
                     request_start = time.perf_counter() if state.profile else None
+                    assert viewport is not None
                     analysis, som_image_base64 = await client.analyze(
                         omniparser_image_data, viewport
                     )
@@ -1465,7 +1923,7 @@ def observe(
                         )
                         sys.exit(1)
 
-                    if som_image_base64:
+                    if som_image_base64 and omniparser_shot_dir:
                         som_start = time.perf_counter() if state.profile else None
                         som_image_base64 = downscale_image(
                             som_image_base64, quality=som_quality
@@ -1547,9 +2005,10 @@ def observe(
                             screenshot_path = str(p)
                     shot_path = screenshot_path
 
-                with open(shot_path, "wb") as f:
-                    f.write(base64.b64decode(shot_data))
-                screenshot_ms = (time.perf_counter() - start_shot) * 1000.0
+                if shot_path and shot_data:
+                    with open(shot_path, "wb") as f:
+                        f.write(base64.b64decode(shot_data))
+                    screenshot_ms = (time.perf_counter() - start_shot) * 1000.0
 
             obs = Observation(
                 session_id=instance_id,
@@ -2025,8 +2484,6 @@ def save_state(ctx: typer.Context, path: str):
     instance_id = ctx.obj["instance_id"]
 
     async def run():
-        from browser_use.browser import BrowserSession
-
         session_info = session_manager.get_session(instance_id)
         if session_info is None:
             _output_error(
@@ -2038,6 +2495,7 @@ def save_state(ctx: typer.Context, path: str):
                 ),
             )
             sys.exit(1)
+        assert session_info is not None
         browser_session = BrowserSession(cdp_url=session_info.cdp_url)
         await browser_session.start()
         try:
@@ -2117,6 +2575,17 @@ def _run(args: list[str]) -> None:
 
     if args and args[0] == "list":
         output_data(session_manager.list_sessions())
+        return
+
+    if args and args[0] == "mcp-server":
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(levelname)s: %(message)s",
+            stream=sys.stderr,
+            force=True,
+        )
+        logging.disable(logging.NOTSET)
+        server_app(args=args[1:], standalone_mode=False)
         return
 
     if "--profile" in args:

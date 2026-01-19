@@ -199,6 +199,26 @@ buse b1 scroll --up --pages 1
 buse b1 wait 2
 ```
 
+## MCP Server
+
+Expose the active browser instances via the Model Context Protocol.
+
+```
+buse mcp-server --host 0.0.0.0 --port 8000
+```
+
+- `--transport` selects `streamable-http` (default), `sse`, or `stdio`.
+- `--name` changes the MCP server name, `--stateless/--stateful` controls HTTP mode, and `--json-response/--no-json-response` toggles JSON wrapping.
+- `--allow-remote` permits non-local clients (default: local-only). `--auth-token` requires `Authorization: Bearer <token>` or `X-Buse-Token` for HTTP requests.
+- `--format` (`json`|`toon`, default: `json`), `-f` alias.
+- Resources:
+  - `buse://sessions` returns a list of session metadata (`instance_id`, `cdp_url`, `user_data_dir`).
+  - `buse://session/{id}` returns the metadata for a single session.
+- Tools:
+  - Supports all CLI actions: `navigate`, `click`, `input_text`, `send_keys`, `scroll`, `switch_tab`, `close_tab`, `search`, `upload_file`, `find_text`, `dropdown_options`, `select_dropdown`, `go_back`, `hover`, `refresh`, `wait`, `save_state`, `extract`, `evaluate`, `stop_session`, `start_session`, `observe`.
+
+The `mcp` SDK ships with buse, so no extra installation is required.
+
 ## Output & Profiling
 
 - `--format json|toon` to switch output format.
@@ -212,6 +232,8 @@ buse b1 wait 2
 - `BUSE_SELECTOR_CACHE_TTL`: selector-map cache TTL in seconds (default: `0`, disabled).
 - `BUSE_REMOTE_ALLOW_ORIGINS`: override Chrome `--remote-allow-origins` (default: `http://localhost:<port>,http://127.0.0.1:<port>`).
 - `BUSE_IMAGE_QUALITY`: JPEG quality (1-100) for OmniParser images.
+- `BUSE_MCP_ALLOW_REMOTE`: set to `1` to allow non-local MCP clients.
+- `BUSE_MCP_AUTH_TOKEN`: require a Bearer or X-Buse-Token header for MCP HTTP access.
 
 ## References & Inspiration
 

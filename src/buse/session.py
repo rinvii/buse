@@ -64,11 +64,9 @@ class SessionManager:
     def is_alive(self, session: SessionInfo) -> bool:
         import psutil
 
-        # First check PID
         if psutil.pid_exists(session.pid):
-            # Prefer verifying CDP to avoid stale PID reuse
             return self._cdp_ready(session.cdp_url)
-        # If PID is gone, try CDP port
+
         return self._cdp_ready(session.cdp_url)
 
     def get_session(self, instance_id: str) -> Optional[SessionInfo]:
@@ -131,7 +129,6 @@ class SessionManager:
 
         cdp_url = f"http://localhost:{port}"
 
-        # Wait for CDP to be ready
         max_retries = 30
         ready = False
         for _ in range(max_retries):
@@ -236,9 +233,7 @@ class SessionManager:
     def stop_session(self, instance_id: str):
         import psutil
 
-        session = self.sessions.get(
-            instance_id
-        )  # Don't use get_session to avoid cleanup if PID is gone but CDP is alive
+        session = self.sessions.get(instance_id)
         if session:
             try:
                 proc = psutil.Process(session.pid)

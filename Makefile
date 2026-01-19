@@ -3,6 +3,9 @@
 build:
 	uv build
 
+check:
+	uvx ty check && uvx ruff check && uvx ruff format
+
 test:
 	uv run pytest --cov=buse --cov-report=term-missing
 

@@ -25,7 +25,6 @@ class VisionClient:
                 response = await client.post(self.server_url, json=payload)
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                # Capture the status code and response body for better debugging
                 error_msg = f"OmniParser server returned {e.response.status_code}: {e.response.text}"
                 raise RuntimeError(error_msg) from e
             except Exception as e:
@@ -49,7 +48,6 @@ class VisionClient:
                 som_image_base64 = ""
             elements = []
 
-            # OmniParser returns bounding boxes as normalized floats (0-1).
             width = viewport.width
             height = viewport.height
             scale = 100.0

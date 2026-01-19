@@ -134,7 +134,10 @@ def test_start_session_new(monkeypatch, tmp_path):
         instance_id="b0", cdp_url="http://localhost:9222", pid=2, user_data_dir="/tmp"
     )
     manager.sessions["b_bad"] = SessionInfo(
-        instance_id="b_bad", cdp_url="http://localhost:notaport", pid=3, user_data_dir="/tmp"
+        instance_id="b_bad",
+        cdp_url="http://localhost:notaport",
+        pid=3,
+        user_data_dir="/tmp",
     )
 
     captured = {}
@@ -177,7 +180,9 @@ def test_start_session_windows_creationflags(monkeypatch, tmp_path):
         return FakeProcess()
 
     monkeypatch.setattr("platform.system", lambda: "Windows")
-    monkeypatch.setattr(manager, "_find_chrome_executable", lambda: "C:\\\\Chrome\\\\chrome.exe")
+    monkeypatch.setattr(
+        manager, "_find_chrome_executable", lambda: "C:\\\\Chrome\\\\chrome.exe"
+    )
     monkeypatch.setattr(manager, "_find_free_port", lambda reserved_ports: 9222)
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: True)
@@ -338,7 +343,11 @@ def test_find_chrome_windows_candidate(monkeypatch, tmp_path):
     manager = make_manager(tmp_path)
     monkeypatch.setattr("platform.system", lambda: "Windows")
     monkeypatch.setenv("PROGRAMFILES", "C:\\\\Program Files")
-    monkeypatch.setattr(Path, "exists", lambda p: str(p).endswith("Google/Chrome/Application/chrome.exe"))
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda p: str(p).endswith("Google/Chrome/Application/chrome.exe"),
+    )
     monkeypatch.setattr("shutil.which", lambda cmd: None)
     assert manager._find_chrome_executable().endswith("chrome.exe")
 
@@ -371,7 +380,9 @@ def test_stop_session(monkeypatch, tmp_path):
     manager.sessions["b2"] = SessionInfo(
         instance_id="b2", cdp_url="http://x", pid=2, user_data_dir="/tmp"
     )
-    monkeypatch.setattr("psutil.Process", lambda pid: (_ for _ in ()).throw(psutil.NoSuchProcess(pid)))
+    monkeypatch.setattr(
+        "psutil.Process", lambda pid: (_ for _ in ()).throw(psutil.NoSuchProcess(pid))
+    )
     manager.stop_session("b2")
     assert "b2" not in manager.sessions
 
@@ -381,5 +392,7 @@ def test_list_sessions(monkeypatch, tmp_path):
     manager.sessions["b1"] = SessionInfo(
         instance_id="b1", cdp_url="http://x", pid=1, user_data_dir="/tmp"
     )
-    monkeypatch.setattr(manager, "get_session", lambda instance_id: manager.sessions.get(instance_id))
+    monkeypatch.setattr(
+        manager, "get_session", lambda instance_id: manager.sessions.get(instance_id)
+    )
     assert "b1" in manager.list_sessions()

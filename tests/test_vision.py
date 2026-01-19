@@ -65,9 +65,7 @@ class ClientFactory:
         self.instance: FakeAsyncClient | None = None
 
     def __call__(self, *args, **kwargs):
-        self.instance = FakeAsyncClient(
-            response=self.response, exc=self.exc, **kwargs
-        )
+        self.instance = FakeAsyncClient(response=self.response, exc=self.exc, **kwargs)
         return self.instance
 
 

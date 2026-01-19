@@ -38,7 +38,6 @@ class Observation(BaseModel):
     viewport: Optional[ViewportInfo] = None
     screenshot_path: Optional[str] = None
     dom_minified: str
-    # We can add more fields like 'inputs' state if needed later
 
 
 class ActionResult(BaseModel):
