@@ -79,8 +79,7 @@ def server(session_manager, tool_handler, observation_handler):
             return "app"
 
     monkeypatch_fastmcp = FakeFastMCP
-    mcp_server.FastMCP = monkeypatch_fastmcp  # type: ignore
-
+    mcp_server.FastMCP = monkeypatch_fastmcp  # type: ignore[assignment]
     return BuseMCPServer(
         session_manager,
         tool_handler=tool_handler,
@@ -96,7 +95,6 @@ async def test_navigate(server, tool_handler):
         "action_name": "navigate",
         "kwargs": {"url": "https://test.com", "new_tab": True},
     }
-
     await server.mcp.tools["navigate"]("id1", "https://test.com")
     assert tool_handler.calls[-1]["kwargs"]["new_tab"] is False
 
@@ -115,17 +113,13 @@ async def test_click_combinations(server, tool_handler):
             "coordinate_y": None,
         },
     }
-
     await server.mcp.tools["click"]("id1", element_id="submit-btn")
     assert tool_handler.calls[-1]["kwargs"]["element_id"] == "submit-btn"
-
     await server.mcp.tools["click"]("id1", element_class="btn-primary")
     assert tool_handler.calls[-1]["kwargs"]["element_class"] == "btn-primary"
-
     await server.mcp.tools["click"]("id1", x=100, y=200)
     assert tool_handler.calls[-1]["kwargs"]["coordinate_x"] == 100
     assert tool_handler.calls[-1]["kwargs"]["coordinate_y"] == 200
-
     await server.mcp.tools["click"]("id1", index=1, element_id="", element_class="  ")
     assert tool_handler.calls[-1]["kwargs"]["element_id"] is None
     assert tool_handler.calls[-1]["kwargs"]["element_class"] is None
@@ -137,10 +131,8 @@ async def test_click_validation(server):
         ValueError, match="Provide an index, element_id/element_class, or x/y"
     ):
         await server.mcp.tools["click"]("id1")
-
     with pytest.raises(ValueError, match="Provide both x and y"):
         await server.mcp.tools["click"]("id1", x=10)
-
     with pytest.raises(ValueError, match="Provide both x and y"):
         await server.mcp.tools["click"]("id1", y=10)
 
@@ -158,7 +150,6 @@ async def test_input_text(server, tool_handler):
             "element_class": None,
         },
     }
-
     with pytest.raises(
         ValueError, match="Provide an index or element_id/element_class"
     ):
@@ -190,7 +181,6 @@ async def test_scroll(server, tool_handler):
         "action_name": "scroll",
         "kwargs": {"pages": 0.5, "down": False, "index": 2},
     }
-
     await server.mcp.tools["scroll"]("id1")
     assert tool_handler.calls[-1]["kwargs"]["down"] is True
     assert tool_handler.calls[-1]["kwargs"]["pages"] == 1.0
@@ -204,7 +194,6 @@ async def test_tabs(server, tool_handler):
         "action_name": "switch",
         "kwargs": {"tab_id": "tab1"},
     }
-
     await server.mcp.tools["close_tab"]("id1", "tab1")
     assert tool_handler.calls[-1] == {
         "instance_id": "id1",
@@ -247,10 +236,8 @@ async def test_find_text(server, tool_handler):
 async def test_dropdown(server, tool_handler):
     await server.mcp.tools["dropdown_options"]("id1", index=1)
     assert tool_handler.calls[-1]["action_name"] == "dropdown_options"
-
     with pytest.raises(ValueError):
         await server.mcp.tools["dropdown_options"]("id1")
-
     await server.mcp.tools["select_dropdown"]("id1", "Option A", index=1)
     assert tool_handler.calls[-1] == {
         "instance_id": "id1",
@@ -262,7 +249,6 @@ async def test_dropdown(server, tool_handler):
             "element_class": None,
         },
     }
-
     with pytest.raises(ValueError):
         await server.mcp.tools["select_dropdown"]("id1", "Option A")
 
@@ -277,7 +263,6 @@ async def test_go_back(server, tool_handler):
 async def test_hover(server, tool_handler):
     await server.mcp.tools["hover"]("id1", index=1)
     assert tool_handler.calls[-1]["action_name"] == "hover"
-
     with pytest.raises(ValueError):
         await server.mcp.tools["hover"]("id1")
 
@@ -336,7 +321,6 @@ async def test_evaluate(server, tool_handler):
 async def test_session_lifecycle(server, tool_handler):
     await server.mcp.tools["start_session"]("id1")
     assert tool_handler.calls[-1]["action_name"] == "start"
-
     await server.mcp.tools["stop_session"]("id1")
     assert tool_handler.calls[-1]["action_name"] == "stop"
 
@@ -346,7 +330,6 @@ async def test_observe(server, observation_handler):
     await server.mcp.tools["observe"](
         "id1", screenshot=True, no_dom=True, omniparser=False
     )
-
     assert observation_handler.calls[-1] == {
         "instance_id": "id1",
         "kwargs": {"screenshot": True, "no_dom": True, "omniparser": False},
@@ -357,7 +340,6 @@ async def test_observe(server, observation_handler):
 async def test_negative_values(server, tool_handler):
     await server.mcp.tools["click"]("id1", index=-1)
     assert tool_handler.calls[-1]["kwargs"]["index"] == -1
-
     await server.mcp.tools["click"]("id1", x=-100, y=-100)
     assert tool_handler.calls[-1]["kwargs"]["coordinate_x"] == -100
 
@@ -374,7 +356,6 @@ async def test_weird_inputs(server, tool_handler):
     weird_id = '"; DROP TABLE sessions; --'
     await server.mcp.tools["click"]("id1", element_id=weird_id)
     assert tool_handler.calls[-1]["kwargs"]["element_id"] == weird_id
-
     await server.mcp.tools["switch_tab"]("id1", "tab #1")
     assert tool_handler.calls[-1]["kwargs"]["tab_id"] == "tab #1"
 

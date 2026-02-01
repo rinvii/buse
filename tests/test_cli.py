@@ -1,10 +1,8 @@
 import base64
 import json
 from types import SimpleNamespace
-
 import pytest
 import typer
-
 import buse.main as main
 
 
@@ -14,7 +12,6 @@ def reset_caches(monkeypatch):
     main._file_systems.clear()
     main._selector_cache.clear()
     monkeypatch.delenv("BUSE_SELECTOR_CACHE_TTL", raising=False)
-
     monkeypatch.setattr(main, "BrowserSession", FakeBrowserSession)
 
     class FakeFileSystem:
@@ -212,13 +209,11 @@ def test_basic_commands(monkeypatch, tmp_path):
     main.switch_tab(ctx, "ABCD")
     main.close_tab(ctx, "ABCD")
     main.evaluate(ctx, "1+1")
-
     f = tmp_path / "file.txt"
     f.write_text("content")
     main.upload_file(ctx, index=1, path=str(f))
     main.send_keys(ctx, "Enter")
     main.find_text(ctx, "hello")
-
     assert [c[1] for c in calls] == [
         "navigate",
         "navigate",
@@ -235,7 +230,6 @@ def test_basic_commands(monkeypatch, tmp_path):
         "send_keys",
         "find_text",
     ]
-
     assert calls[11][2]["index"] == 1
     assert calls[11][2]["path"] == str(f)
     assert calls[12][2]["keys"] == "Enter"
@@ -303,7 +297,6 @@ def test_input_text_variants(monkeypatch):
     )
     assert calls[0][1] == "input"
     assert calls[1][2]["text"] == "opt"
-
     with pytest.raises(typer.BadParameter):
         main.input(
             ctx,
@@ -343,7 +336,6 @@ def test_dropdown_commands(monkeypatch):
         "select_dropdown",
         "select_dropdown",
     ]
-
     with pytest.raises(typer.BadParameter):
         main.select_dropdown(
             ctx, index=1, text=None, text_opt=None, element_id=None, element_class=None
@@ -379,7 +371,6 @@ def test_hover(monkeypatch):
     assert calls[0][2] == {"index": 5}
     assert calls[1][2] == {"element_id": "x"}
     assert calls[2][2] == {"element_class": "c"}
-
     with pytest.raises(typer.BadParameter):
         main.hover(ctx, index=None, element_id=None, element_class=None)
 
@@ -410,7 +401,6 @@ def test_save_state(monkeypatch, tmp_path, capsys):
     main.save_state(DummyCtx(), "state.json")
     out = json.loads(capsys.readouterr().out)
     assert out["cookies_count"] == 1
-
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: None)
     with pytest.raises(SystemExit):
         main.save_state(DummyCtx(), "state.json")
@@ -427,7 +417,6 @@ def test_extract(monkeypatch):
 
     monkeypatch.setattr("browser_use.llm.openai.chat.ChatOpenAI", FakeChat)
     monkeypatch.setenv("BUSE_EXTRACT_MODEL", "x")
-
     main.extract(DummyCtx(), "q")
     assert calls[0][1] == "extract"
 
@@ -468,20 +457,16 @@ def test_app_paths(monkeypatch, capsys):
     monkeypatch.setattr(main.session_manager, "list_sessions", lambda: {"a": 1})
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: None)
     monkeypatch.setattr(main.session_manager, "start_session", lambda _: None)
-
     monkeypatch.setattr(main.sys, "argv", ["buse", "list"])
     main.app()
     assert json.loads(capsys.readouterr().out) == {"a": 1}
-
     monkeypatch.setattr(main.sys, "argv", ["buse", "--help"])
     main.app()
     capsys.readouterr()
-
     monkeypatch.setattr(main.sys, "argv", ["buse", "--format", "toon"])
     main.app()
     assert main.state.format == main.OutputFormat.toon
     capsys.readouterr()
-
     monkeypatch.setattr(main.sys, "argv", ["buse", "-f", "json"])
     main.app()
     assert main.state.format == main.OutputFormat.json
@@ -506,13 +491,11 @@ def test_run_cli_system_exit(monkeypatch):
 def test_app_profile_flags(monkeypatch, capsys):
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: None)
     monkeypatch.setattr(main.session_manager, "start_session", lambda _: None)
-
     monkeypatch.setattr(main.sys, "argv", ["buse", "--profile"])
     main.app()
     assert main.state.profile is True
     capsys.readouterr()
     main.state.profile = False
-
     monkeypatch.setattr(main.sys, "argv", ["buse", "-p"])
     main.app()
     assert main.state.profile is True
@@ -593,10 +576,8 @@ def test_app_wait_invalid_negative_not_rewritten(monkeypatch):
 
 def test_upload_file_validation(tmp_path):
     ctx = DummyCtx()
-
     with pytest.raises(typer.BadParameter, match="Path is not a file"):
         main.upload_file(ctx, index=1, path=str(tmp_path))
-
     non_existent = tmp_path / "fake.txt"
     with pytest.raises(typer.BadParameter, match="File not found"):
         main.upload_file(ctx, index=1, path=str(non_existent))

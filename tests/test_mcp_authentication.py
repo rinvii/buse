@@ -55,18 +55,14 @@ def test_get_header():
 def test_extract_auth_token():
     assert _extract_auth_token([(b"authorization", b"Bearer secret")]) == "secret"
     assert _extract_auth_token([(b"authorization", b"bearer secret")]) == "secret"
-
     assert _extract_auth_token([(b"authorization", b"secret")]) == "secret"
-
     assert _extract_auth_token([(b"x-buse-token", b"secret")]) == "secret"
-
     assert (
         _extract_auth_token(
             [(b"x-buse-token", b"token2"), (b"authorization", b"Bearer token1")]
         )
         == "token1"
     )
-
     assert _extract_auth_token([]) is None
 
 
@@ -83,12 +79,9 @@ async def test_access_guard_passthrough_non_http():
 async def test_access_guard_blocks_remote():
     app = AsyncMock()
     guard = MCPAccessGuard(app, allow_remote=False, auth_token=None)
-
     scope = {"type": "http", "client": ("8.8.8.8", 1234)}
     send = AsyncMock()
-
     await guard(scope, {}, send)
-
     app.assert_not_called()
     assert send.call_count == 2
     assert send.call_args_list[0][0][0]["status"] == 403
@@ -98,7 +91,6 @@ async def test_access_guard_blocks_remote():
 async def test_access_guard_allows_remote_if_configured():
     app = AsyncMock()
     guard = MCPAccessGuard(app, allow_remote=True, auth_token=None)
-
     scope = {"type": "http", "client": ("8.8.8.8", 1234)}
     await guard(scope, {}, {})
     app.assert_called_once()
@@ -108,14 +100,11 @@ async def test_access_guard_allows_remote_if_configured():
 async def test_access_guard_auth_failure():
     app = AsyncMock()
     guard = MCPAccessGuard(app, allow_remote=True, auth_token="secret")
-
     scope = {"type": "http", "headers": [], "client": ("127.0.0.1", 1234)}
     send = AsyncMock()
     await guard(scope, {}, send)
-
     app.assert_not_called()
     assert send.call_args_list[0][0][0]["status"] == 401
-
     send.reset_mock()
     scope["headers"] = [(b"authorization", b"Bearer wrong")]
     await guard(scope, {}, send)
@@ -127,7 +116,6 @@ async def test_access_guard_auth_failure():
 async def test_access_guard_auth_success():
     app = AsyncMock()
     guard = MCPAccessGuard(app, allow_remote=True, auth_token="secret")
-
     scope = {
         "type": "http",
         "headers": [(b"authorization", b"Bearer secret")],
@@ -139,12 +127,9 @@ async def test_access_guard_auth_success():
 
 def test_wrap_with_access_guard():
     app = MagicMock()
-
     wrapper = _wrap_with_access_guard(app, allow_remote=False, auth_token=None)
     assert isinstance(wrapper, MCPAccessGuard)
-
     wrapper = _wrap_with_access_guard(app, allow_remote=True, auth_token=None)
     assert wrapper is app
-
     wrapper = _wrap_with_access_guard(app, allow_remote=True, auth_token="token")
     assert isinstance(wrapper, MCPAccessGuard)

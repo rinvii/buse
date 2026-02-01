@@ -14,7 +14,7 @@ buse is a stateless CLI designed for AI agents and automation scripts. It turns 
 - **Stateless Control**: Just point the CLI at a browser and go.
 - **Persistent Sessions**: Multiple browser instances can run simultaneously.
 - **Universal Primitives**: Click, type, scroll, and execute JS with one-liners.
-- **Vision-Ready**: `observe` command captures state + screenshots in a single call.
+- **Vision-Ready**: `observe` captures semantic state plus optional screenshots and SoM labels.
 - **Session Migration**: Export cookies/storage via `save-state` to maintain persistent logins.
 
 ## Why 'buse'?
@@ -75,17 +75,21 @@ uv pip install -e .
 
 ### 2. Analysis & Extraction
 
-| Command   | Description                                | Example                              |
-| :-------- | :----------------------------------------- | :----------------------------------- |
-| `observe` | Snapshot DOM + optionally save screenshots | `buse b1 observe --screenshot`       |
-| `extract` | LLM extraction (set `BUSE_EXTRACT_MODEL`)  | `buse b1 extract "get product info"` |
+| Command   | Description                               | Example                              |
+| :-------- | :---------------------------------------- | :----------------------------------- |
+| `observe` | Snapshot page state (visual + text modes) | `buse b1 observe --visual som`       |
+| `extract` | LLM extraction (set `BUSE_EXTRACT_MODEL`) | `buse b1 extract "get product info"` |
 
 #### observe notes
 
 - DOM indices are ephemeral; refresh with `buse <id> observe` after page changes, or use `--id`/`--class` for stability.
-- `observe --omniparser` always captures a screenshot: saves `image.jpg` (input) and `image_som.jpg` (server output) in the screenshots dir or `--path`.
+- Preferred flags are `--visual` (`som`, `omni`, `none`), `--text` (`ai`, `dom`, `none`), and `--mode` (`efficient`, `full`, `raw`).
+- `--human` prints a human-friendly layout; JSON output is better for agents.
+- Legacy flags (`--screenshot`, `--omniparser`, `--som`, `--semantic`, `--no-dom`, `--diagnostics`) are still supported for compatibility.
+- `observe --visual omni` always captures a screenshot: saves `image.jpg` (input) and `image_som.jpg` (server output) in the screenshots dir or `--path`.
 - When available, `screenshot_path` points to `image_som.jpg`. OmniParser `bbox` values are in CSS pixels (not normalized).
-- Use `--no-dom` to skip DOM processing and return an empty `dom_minified`.
+- Use `--text none` to skip DOM processing and return an empty `dom_minified`.
+- `--max-chars 0` disables semantic truncation entirely.
 
 ### 3. Navigation & Interaction
 
@@ -94,8 +98,10 @@ uv pip install -e .
 | `navigate`         | Load a specific URL (supports `--new-tab`)                                                          | `buse b1 navigate "https://google.com"`  |
 | `new-tab`          | Open a URL in a new tab (alias for `navigate --new-tab`)                                            | `buse b1 new-tab "https://example.com"`  |
 | `search`           | Search the web (engines: `google`, `bing`, `duckduckgo`)                                            | `buse b1 search "query" --engine google` |
-| `click`            | Click by index, coordinates, or resolve by `--id`/`--class`                                         | `buse b1 click --x 500 --y 300`          |
-| `input`            | Type text into a field by index or `--id`/`--class` (use `--text` when no index)                    | `buse b1 input 12 "Hello"`               |
+| `click`            | Click by index/ref (`eN`), selector, id/class, or coordinates (with modifiers)                     | `buse b1 click e3 --double`              |
+| `input`            | Type text into a field by index/ref (`eN`) or `--id`/`--class` (supports `--slowly`, `--append`, `--submit`) | `buse b1 input e3 "Hello"`        |
+| `fill`             | Fill multiple fields in one command (JSON payload)                                                 | `buse b1 fill '[{"ref":"e1","value":"a"}]'` |
+| `drag`             | Drag from one element to another (ref/index)                                                       | `buse b1 drag e1 e2`                     |
 | `upload-file`      | Upload a file to an element by index                                                                | `buse b1 upload-file 5 "./img.png"`      |
 | `send-keys`        | Send special keys or text (use `--list-keys` for names, optional focus with `--index/--id/--class`) | `buse b1 send-keys "Enter"`              |
 | `find-text`        | Scroll to specific text on the page                                                                 | `buse b1 find-text "Contact"`            |
@@ -105,7 +111,7 @@ uv pip install -e .
 | `scroll`           | Scroll page or a specific element (use `--up` or `--down`)                                          | `buse b1 scroll --up --pages 2`          |
 | `refresh`          | Reload the current page                                                                             | `buse b1 refresh`                        |
 | `go-back`          | Go back in browser history                                                                          | `buse b1 go-back`                        |
-| `wait`             | Wait for N seconds                                                                                  | `buse b1 wait 2`                         |
+| `wait`             | Wait by time, selector, text, or network idle                                                       | `buse b1 wait 2`                         |
 | `evaluate`         | Execute custom JavaScript code                                                                      | `buse b1 evaluate "alert('Hi')"`         |
 
 ### 4. Advanced
@@ -124,32 +130,16 @@ Global (all commands):
 - `--format` (`json`|`toon`, default: `json`), `-f` alias
 - `--profile` (default: `false`), `-p` alias
 
-Commands:
+Selected command flags:
 
-- `list`: no flags
-- `<id>`: no flags (start/attach instance)
-- `observe`: `--screenshot` (false), `--path` (unset), `--omniparser` (false), `--no-dom` (false)
-- `navigate`: `--new-tab` (false)
-- `new-tab`: no flags
-- `search`: `--engine` (default: `google`)
-- `click`: `--x` (unset), `--y` (unset), `--id` (unset), `--class` (unset)
-- `input`: `--text` (unset), `--id` (unset), `--class` (unset)
-- `upload-file`: no flags
-- `send-keys`: `--index` (unset), `--id` (unset), `--class` (unset), `--list-keys` (false)
-- `find-text`: no flags
-- `dropdown-options`: `--id` (unset), `--class` (unset)
-- `select-dropdown`: `--text` (unset), `--id` (unset), `--class` (unset)
-- `hover`: `--id` (unset), `--class` (unset)
-- `scroll`: `--down/--up` (down default), `--pages` (default: `1.0`), `--index` (unset)
-- `refresh`: no flags
-- `go-back`: no flags
-- `wait`: no flags
-- `switch-tab`: no flags
-- `close-tab`: no flags
-- `save-state`: no flags
-- `extract`: no flags
-- `evaluate`: no flags
-- `stop`: no flags
+- `observe`: `--visual`, `--text`, `--mode`, `--max-chars`, `--max-labels`, `--selector`, `--frame`, `--human`, `--path` (legacy: `--screenshot`, `--omniparser`, `--som`, `--semantic`, `--no-dom`, `--diagnostics`)
+- `click`: `--selector`, `--id`, `--class`, `--x/--y`, `--right`, `--middle`, `--double`, `--ctrl/--shift/--alt/--meta`, `--force`, `--debug`
+- `input`: `--text`, `--id`, `--class`, `--slowly`, `--append`, `--submit`
+- `fill`: JSON list payload (positional)
+- `drag`: `--html5/--no-html5`
+- `send-keys`: `--index`, `--id`, `--class`, `--list-keys`
+- `scroll`: `--down/--up`, `--pages`, `--index`
+- `wait`: `--text`, `--selector`, `--network-idle`, `--timeout`
 
 ### Commands
 
@@ -160,19 +150,29 @@ buse b1
 # Observe without screenshot (JSON)
 buse b1 observe
 
-# Observe with screenshot (JSON + image)
-buse b1 observe --screenshot
+# Observe with SoM labels and semantic text (JSON + image)
+buse b1 observe --visual som --text ai
 
 # Navigate and click by coordinates
 buse b1 navigate "https://example.com"
 buse b1 click --x 280 --y 220
 
-# Click by id/class fallback
+# Click by ref/id/class fallback
+buse b1 click e3
 buse b1 click --id "submit-button"
 buse b1 click --class "cta-primary"
 
 # Input by id with explicit --text
 buse b1 input --id "email" --text "test@example.com"
+
+# Input slowly and submit
+buse b1 input --id "email" --text "test@example.com" --slowly --submit
+
+# Fill multiple fields atomically
+buse b1 fill '[{"ref":"e1","value":"user"},{"ref":"e2","value":"pass","type":"text"}]'
+
+# Drag and drop
+buse b1 drag e1 e2
 
 # Upload a file
 buse b1 upload-file 5 "./image.png"
@@ -215,7 +215,7 @@ buse mcp-server --host 0.0.0.0 --port 8000
   - `buse://sessions` returns a list of session metadata (`instance_id`, `cdp_url`, `user_data_dir`).
   - `buse://session/{id}` returns the metadata for a single session.
 - Tools:
-  - Supports all CLI actions: `navigate`, `click`, `input_text`, `send_keys`, `scroll`, `switch_tab`, `close_tab`, `search`, `upload_file`, `find_text`, `dropdown_options`, `select_dropdown`, `go_back`, `hover`, `refresh`, `wait`, `save_state`, `extract`, `evaluate`, `stop_session`, `start_session`, `observe`.
+  - Supports all CLI actions: `navigate`, `click`, `input_text`, `fill`, `drag`, `send_keys`, `scroll`, `switch_tab`, `close_tab`, `search`, `upload_file`, `find_text`, `dropdown_options`, `select_dropdown`, `go_back`, `hover`, `refresh`, `wait`, `save_state`, `extract`, `evaluate`, `stop_session`, `start_session`, `observe`.
 
 The `mcp` SDK ships with buse, so no extra installation is required.
 

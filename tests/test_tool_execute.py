@@ -4,6 +4,7 @@ import time
 from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 import browser_use
+import browser_use.browser
 import buse.main as main
 
 
@@ -150,7 +151,6 @@ def reset_fakes(monkeypatch):
     FakeBrowserSession.selector_map = {}
     FakeBrowserSession.open_tabs = []
     FakeCDPSession.evaluate_result = {"result": {"value": {}}}
-
     monkeypatch.delenv("BUSE_SELECTOR_CACHE_TTL", raising=False)
     main._browser_sessions.clear()
     main._file_systems.clear()
@@ -162,10 +162,8 @@ def reset_fakes(monkeypatch):
         user_data_dir = "/tmp"
 
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: DummySession())
-
     monkeypatch.setattr(browser_use, "Controller", FakeController)
     monkeypatch.setattr(browser_use.browser, "BrowserSession", FakeBrowserSession)
-
     monkeypatch.setattr(main, "BrowserSession", FakeBrowserSession)
 
     class FakeFileSystem:
@@ -173,7 +171,6 @@ def reset_fakes(monkeypatch):
             pass
 
     monkeypatch.setattr(main, "FileSystem", FakeFileSystem)
-
     yield
 
 
@@ -223,7 +220,6 @@ async def test_execute_tool_upload_file_passes_available_paths(capsys):
 @pytest.mark.asyncio
 async def test_send_keys_focus_by_index(capsys):
     FakeBrowserSession.selector_map = {2: FakeElement()}
-
     await main.execute_tool(
         "b1",
         "send_keys",
@@ -239,10 +235,8 @@ async def test_send_keys_focus_by_index(capsys):
 @pytest.mark.asyncio
 async def test_send_keys_focus_fallback_click(capsys):
     FakeBrowserSession.selector_map = {3: FakeElement()}
-
     mock_cdp = FakeCDPSession()
     mock_cdp.cdp_client.send.DOM.focus = AsyncMock(side_effect=Exception("focus fail"))
-
     with patch.object(
         FakeBrowserSession, "get_or_create_cdp_session", return_value=mock_cdp
     ):
@@ -278,10 +272,8 @@ async def test_send_keys_focus_no_position(capsys):
             self.backend_node_id = 1
 
     FakeBrowserSession.selector_map = {4: NoPosElement()}
-
     mock_cdp = FakeCDPSession()
     mock_cdp.cdp_client.send.DOM.focus = AsyncMock(side_effect=Exception("focus fail"))
-
     with patch.object(
         FakeBrowserSession, "get_or_create_cdp_session", return_value=mock_cdp
     ):
@@ -334,7 +326,6 @@ async def test_execute_tool_coerces_index_message_to_error(capsys):
                 {"index": 1},
                 needs_selector_map=False,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert captured["error_details"]["stage"] == "execute_tool"
@@ -360,7 +351,6 @@ async def test_execute_tool_exception_outputs_error(capsys):
                 {"index": 1},
                 needs_selector_map=False,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 
@@ -406,14 +396,12 @@ async def test_navigation_invalidates_selector_cache():
 @pytest.mark.asyncio
 async def test_resolve_index_by_id_after_refresh(capsys):
     FakeBrowserSession.refreshed_index_by_id = {"foo": 7}
-
     await main.execute_tool(
         "b1",
         "input",
         {"element_id": "foo", "text": "hi"},
         needs_selector_map=True,
     )
-
     assert FakeController.last_params is not None
     assert FakeController.last_params["index"] == 7
     captured = capsys.readouterr().out
@@ -458,7 +446,6 @@ async def test_coordinate_click_enables_coordinate_mode(capsys):
         {"coordinate_x": 10, "coordinate_y": 20},
         needs_selector_map=False,
     )
-
     assert FakeController.coordinate_enabled is True
     captured = capsys.readouterr().out
     assert json.loads(captured)["success"] is True
@@ -492,7 +479,6 @@ async def test_dropdown_options_fallback_by_id(capsys):
             {"element_id": "sel"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert "Found select dropdown" in captured["message"]
@@ -513,7 +499,6 @@ async def test_dropdown_options_fallback_by_class(capsys):
             {"element_class": "sel"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
 
@@ -531,7 +516,6 @@ async def test_select_dropdown_fallback_by_id(capsys):
             {"element_id": "sel", "text": "B"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert captured["message"] == "Selected option: B (value: B)"
@@ -542,7 +526,6 @@ async def test_dropdown_options_fallback_error(capsys):
     FakeCDPSession.evaluate_result = {
         "result": {"value": {"error": "Select element not found"}}
     }
-
     with patch(
         "buse.main._try_dropdown_fallback",
         return_value=(True, "Select element not found", None),
@@ -554,7 +537,6 @@ async def test_dropdown_options_fallback_error(capsys):
                 {"element_id": "sel"},
                 needs_selector_map=True,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 
@@ -564,7 +546,6 @@ async def test_select_dropdown_fallback_option_missing(capsys):
     FakeCDPSession.evaluate_result = {
         "result": {"value": {"error": "Option not found"}}
     }
-
     with patch(
         "buse.main._try_dropdown_fallback",
         return_value=(True, "Option not found", None),
@@ -576,7 +557,6 @@ async def test_select_dropdown_fallback_option_missing(capsys):
                 {"element_id": "sel", "text": "Z"},
                 needs_selector_map=True,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 
@@ -590,7 +570,6 @@ async def test_resolve_index_failure_outputs_error(capsys):
             {"element_id": "missing", "text": "hi"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 
@@ -605,7 +584,6 @@ async def test_resolve_index_failure_profiled(capsys):
             {"element_id": "missing", "text": "hi"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert "profile" in captured
@@ -621,7 +599,6 @@ async def test_js_fallback_click(capsys):
             {"element_id": "x"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert captured["message"] == "Clicked element"
@@ -636,7 +613,6 @@ async def test_js_fallback_input(capsys):
             {"element_class": "cls", "text": "hi"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert captured["message"] == "Typed 'hi'"
@@ -651,7 +627,6 @@ async def test_js_fallback_hover(capsys):
             {"element_id": "hover"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert captured["message"] == "Hovered element"
@@ -667,7 +642,6 @@ async def test_js_fallback_profiled(capsys):
             {"element_id": "x"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert "profile" in captured
@@ -677,14 +651,12 @@ async def test_js_fallback_profiled(capsys):
 @pytest.mark.asyncio
 async def test_execute_tool_hover_index(capsys):
     FakeBrowserSession.selector_map = {5: FakeElement()}
-
     await main.execute_tool(
         "b1",
         "hover",
         {"index": 5},
         needs_selector_map=True,
     )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert captured["message"] == "Hovered element"
@@ -694,14 +666,12 @@ async def test_execute_tool_hover_index(capsys):
 async def test_execute_tool_hover_index_profiled(capsys):
     FakeBrowserSession.selector_map = {5: FakeElement()}
     main.state.profile = True
-
     await main.execute_tool(
         "b1",
         "hover",
         {"index": 5},
         needs_selector_map=True,
     )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert "profile" in captured
@@ -717,7 +687,6 @@ async def test_execute_tool_hover_missing_index(capsys):
             {},
             needs_selector_map=False,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 
@@ -732,7 +701,6 @@ async def test_execute_tool_hover_missing_index_profiled(capsys):
             {},
             needs_selector_map=False,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert "profile" in captured
@@ -747,7 +715,6 @@ async def test_execute_tool_hover_missing_position(capsys):
             self.backend_node_id = 1
 
     FakeBrowserSession.selector_map = {5: NoPosElement()}
-
     with pytest.raises(SystemExit):
         await main.execute_tool(
             "b1",
@@ -755,7 +722,6 @@ async def test_execute_tool_hover_missing_position(capsys):
             {"index": 5},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 
@@ -769,7 +735,6 @@ async def test_execute_tool_hover_missing_position_profiled(capsys):
 
     FakeBrowserSession.selector_map = {5: NoPosElement()}
     main.state.profile = True
-
     with pytest.raises(SystemExit):
         await main.execute_tool(
             "b1",
@@ -777,7 +742,6 @@ async def test_execute_tool_hover_missing_position_profiled(capsys):
             {"index": 5},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert "profile" in captured
@@ -787,14 +751,12 @@ async def test_execute_tool_hover_missing_position_profiled(capsys):
 @pytest.mark.asyncio
 async def test_close_tab_prefix_normalizes(capsys):
     FakeBrowserSession.open_tabs = ["92320F7260631C592324DEBC601EA405"]
-
     await main.execute_tool(
         "b1",
         "close",
         {"tab_id": "9232"},
         needs_selector_map=False,
     )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert captured["message"] == "Closed tab #A405"
@@ -804,7 +766,6 @@ async def test_close_tab_prefix_normalizes(capsys):
 @pytest.mark.asyncio
 async def test_close_tab_not_found(capsys):
     FakeBrowserSession.open_tabs = []
-
     with pytest.raises(SystemExit):
         await main.execute_tool(
             "b1",
@@ -812,7 +773,6 @@ async def test_close_tab_not_found(capsys):
             {"tab_id": "ABCD"},
             needs_selector_map=False,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert captured["error"] == "Tab #ABCD not found"
@@ -839,7 +799,6 @@ async def test_close_tab_still_open(capsys):
                 {"tab_id": "ABCD"},
                 needs_selector_map=False,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert captured["error"] == "Tab #ABCD still open"
@@ -859,7 +818,6 @@ async def test_dropdown_options_fallback_error_profiled(capsys):
                 {"element_id": "sel"},
                 needs_selector_map=True,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert "profile" in captured
@@ -879,7 +837,6 @@ async def test_select_dropdown_fallback_error_exits(capsys):
                 {"element_id": "sel", "text": "Z"},
                 needs_selector_map=True,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 
@@ -898,7 +855,6 @@ async def test_select_dropdown_fallback_error_profiled(capsys):
                 {"element_id": "sel", "text": "Z"},
                 needs_selector_map=True,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert "profile" in captured
@@ -918,7 +874,6 @@ async def test_dropdown_options_fallback_profiled_success(capsys):
             {"element_class": "sel"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert "profile" in captured
@@ -938,7 +893,6 @@ async def test_dropdown_options_fallback_error_exits(capsys):
                 {"element_id": "sel"},
                 needs_selector_map=True,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 
@@ -956,7 +910,6 @@ async def test_select_dropdown_fallback_profiled_success(capsys):
             {"element_id": "sel", "text": "B"},
             needs_selector_map=True,
         )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is True
     assert "profile" in captured
@@ -983,7 +936,6 @@ async def test_execute_tool_profiled_error_exits(capsys):
                 needs_selector_map=False,
             )
     main.state.profile = False
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
     assert "profile" in captured
@@ -1055,7 +1007,6 @@ async def test_execute_tool_error_exits(capsys):
                 {"index": 1},
                 needs_selector_map=False,
             )
-
     captured = json.loads(capsys.readouterr().out)
     assert captured["success"] is False
 

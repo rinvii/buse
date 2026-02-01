@@ -29,7 +29,6 @@ class VisionClient:
                 raise RuntimeError(error_msg) from e
             except Exception as e:
                 raise RuntimeError(f"Failed to connect to OmniParser: {e}") from e
-
             try:
                 data = response.json()
             except ValueError as e:
@@ -39,7 +38,6 @@ class VisionClient:
                 ) from e
             if not isinstance(data, dict):
                 raise RuntimeError("OmniParser response must be a JSON object.")
-
             parsed_content = data.get("parsed_content_list", [])
             if not isinstance(parsed_content, list):
                 raise RuntimeError("OmniParser response missing parsed_content_list.")
@@ -47,7 +45,6 @@ class VisionClient:
             if not isinstance(som_image_base64, str):
                 som_image_base64 = ""
             elements = []
-
             width = viewport.width
             height = viewport.height
             scale = 100.0
@@ -65,7 +62,6 @@ class VisionClient:
                     or not all(isinstance(v, (int, float)) for v in bbox)
                 ):
                     continue
-
                 bbox_px = [
                     bbox[0] * width,
                     bbox[1] * height,
@@ -74,15 +70,12 @@ class VisionClient:
                 ]
                 css_center_x = (bbox_px[0] + bbox_px[2]) / 2
                 css_center_y = (bbox_px[1] + bbox_px[3]) / 2
-
                 bbox_px = [_truncate(value) for value in bbox_px]
                 css_center_x = _truncate(css_center_x)
                 css_center_y = _truncate(css_center_y)
-
                 el_type = item.get("type", "unknown")
                 el_content = item.get("content", "")
                 el_interactivity = item.get("interactivity", False)
-
                 elements.append(
                     VisualElement(
                         index=i,
@@ -94,7 +87,6 @@ class VisionClient:
                         bbox=bbox_px,
                     )
                 )
-
             return VisualAnalysis(elements=elements), som_image_base64
 
     @staticmethod

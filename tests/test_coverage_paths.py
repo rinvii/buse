@@ -131,7 +131,6 @@ def test_observe_omniparser_no_screenshot_with_error(monkeypatch, capsys, tmp_pa
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
     session_info = SimpleNamespace(cdp_url="http://u", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
-
     cdp = MagicMock()
     cdp.cdp_client.send.Page.captureScreenshot = AsyncMock(
         side_effect=Exception("CDP FAIL")
@@ -169,13 +168,11 @@ def test_observe_omniparser_no_screenshot_with_error(monkeypatch, capsys, tmp_pa
     monkeypatch.setattr(main, "BrowserSession", LocalFakeBrowser)
     ctx = MagicMock()
     ctx.obj = {"instance_id": "b1"}
-
     with patch("buse.main.asyncio.run", side_effect=sync_run_in_new_loop):
         with pytest.raises((SystemExit, typer.Exit)):
             main.observe(
                 ctx, screenshot=False, path=None, omniparser=True, no_dom=False
             )
-
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is False
 
@@ -185,13 +182,11 @@ def test_observe_omniparser_no_viewport(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
     session_info = SimpleNamespace(cdp_url="http://u", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
-
     cdp = MagicMock()
     cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
         return_value={"result": {"value": None}}
     )
     cdp.session_id = "s1"
-
     summary = SimpleNamespace(url="u", title="t", screenshot="data", dom_state=None)
 
     class LocalFakeBrowser:
@@ -218,13 +213,11 @@ def test_observe_omniparser_no_viewport(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(main, "BrowserSession", LocalFakeBrowser)
     ctx = MagicMock()
     ctx.obj = {"instance_id": "b1"}
-
     with patch("buse.main.asyncio.run", side_effect=sync_run_in_new_loop):
         with pytest.raises((SystemExit, typer.Exit)):
             main.observe(
                 ctx, screenshot=False, path=None, omniparser=True, no_dom=False
             )
-
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is False
 
@@ -235,7 +228,6 @@ async def test_observe_omniparser_som_saving_direct(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
     session_info = SimpleNamespace(cdp_url="http://u", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
-
     cdp = MagicMock()
     cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
         return_value={
@@ -245,7 +237,6 @@ async def test_observe_omniparser_som_saving_direct(monkeypatch, tmp_path):
         }
     )
     cdp.session_id = "s1"
-
     img_data = base64.b64encode(b"img").decode()
     summary = SimpleNamespace(url="u", title="t", screenshot=img_data, dom_state=None)
 
@@ -271,7 +262,6 @@ async def test_observe_omniparser_som_saving_direct(monkeypatch, tmp_path):
             return []
 
     monkeypatch.setattr(main, "BrowserSession", LocalFakeBrowser)
-
     mock_analysis = VisualAnalysis(
         elements=[
             VisualElement(
@@ -285,7 +275,6 @@ async def test_observe_omniparser_som_saving_direct(monkeypatch, tmp_path):
             )
         ]
     )
-
     from buse.vision import VisionClient
 
     def fake_save(self, data, path):
@@ -293,17 +282,13 @@ async def test_observe_omniparser_som_saving_direct(monkeypatch, tmp_path):
             f.write(base64.b64decode(data))
 
     monkeypatch.setattr(VisionClient, "save_som_image", fake_save)
-
     mock_vision = MagicMock(spec=VisionClient)
     mock_vision.analyze = AsyncMock(
         return_value=(mock_analysis, base64.b64encode(b"som").decode())
     )
-
     mock_vision.save_som_image = lambda data, path: fake_save(None, data, path)
-
     monkeypatch.setattr("buse.vision.VisionClient", lambda **kwargs: mock_vision)
     monkeypatch.setattr("buse.utils.downscale_image", lambda x, **kwargs: x)
-
     main.state.profile = True
     shots_dir = tmp_path / "shots"
     shots_dir.mkdir()
@@ -317,11 +302,9 @@ def test_save_state_no_session_outputs_error(monkeypatch, capsys):
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: None)
     ctx = MagicMock()
     ctx.obj = {"instance_id": "missing"}
-
     with patch("buse.main.asyncio.run", side_effect=sync_run_in_new_loop):
         with pytest.raises((SystemExit, typer.Exit)):
             main.save_state(ctx, "path.json")
-
     out = json.loads(capsys.readouterr().out)
     assert "Instance missing not found" in out["error"]
 
@@ -353,7 +336,6 @@ async def test_get_observation_omniparser_returned_no_elements_direct(
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
     session_info = SimpleNamespace(cdp_url="http://u", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
-
     cdp = MagicMock()
     cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
         return_value={
@@ -363,7 +345,6 @@ async def test_get_observation_omniparser_returned_no_elements_direct(
         }
     )
     cdp.session_id = "s1"
-
     summary = SimpleNamespace(url="u", title="t", screenshot="data", dom_state=None)
 
     class LocalFakeBrowser:
@@ -388,13 +369,11 @@ async def test_get_observation_omniparser_returned_no_elements_direct(
             return []
 
     monkeypatch.setattr(main, "BrowserSession", LocalFakeBrowser)
-
     mock_analysis = VisualAnalysis(elements=[])
     mock_vision = MagicMock()
     mock_vision.analyze = AsyncMock(return_value=(mock_analysis, None))
     monkeypatch.setattr("buse.vision.VisionClient", lambda **kwargs: mock_vision)
     monkeypatch.setattr("buse.utils.downscale_image", lambda x, **kwargs: x)
-
     with pytest.raises(RuntimeError, match="OmniParser returned no elements"):
         await main.get_observation("b1", omniparser=True)
 
@@ -624,7 +603,6 @@ async def test_focus_element_cdp_fail_fallback_fail(monkeypatch):
     )
     cdp = MagicMock()
     cdp.cdp_client.send.DOM.focus = AsyncMock(side_effect=Exception("focus fail"))
-
     cdp.cdp_client.send.Input.dispatchMouseEvent = AsyncMock(
         side_effect=Exception("click fail")
     )
@@ -1007,7 +985,6 @@ async def test_get_observation_omniparser_missing_screenshot(monkeypatch, tmp_pa
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
     session_info = SimpleNamespace(cdp_url="http://u", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
-
     browser_session = MagicMock()
     browser_session.agent_focus_target_id = None
     browser_session.get_tabs = AsyncMock(return_value=[])
@@ -1021,7 +998,6 @@ async def test_get_observation_omniparser_missing_screenshot(monkeypatch, tmp_pa
         "_get_browser_session",
         AsyncMock(return_value=(browser_session, MagicMock())),
     )
-
     cdp = MagicMock()
     cdp.session_id = "s1"
     cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
@@ -1033,7 +1009,6 @@ async def test_get_observation_omniparser_missing_screenshot(monkeypatch, tmp_pa
     )
     cdp.cdp_client.send.Page.captureScreenshot = AsyncMock(return_value={})
     browser_session.get_or_create_cdp_session = AsyncMock(return_value=cdp)
-
     with pytest.raises(RuntimeError, match="Missing screenshot for OmniParser"):
         await main.get_observation("b1", omniparser=True)
 
@@ -1044,7 +1019,6 @@ async def test_get_observation_omniparser_missing_viewport(monkeypatch, tmp_path
     monkeypatch.setattr(main, "_should_probe_omniparser", lambda *_: False)
     session_info = SimpleNamespace(cdp_url="http://u", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
-
     img_data = base64.b64encode(b"img").decode()
     browser_session = MagicMock()
     browser_session.agent_focus_target_id = None
@@ -1059,14 +1033,12 @@ async def test_get_observation_omniparser_missing_viewport(monkeypatch, tmp_path
         "_get_browser_session",
         AsyncMock(return_value=(browser_session, MagicMock())),
     )
-
     cdp = MagicMock()
     cdp.session_id = "s1"
     cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
         return_value={"result": {"value": None}}
     )
     browser_session.get_or_create_cdp_session = AsyncMock(return_value=cdp)
-
     with pytest.raises(RuntimeError, match="Missing viewport for OmniParser"):
         await main.get_observation("b1", omniparser=True)
 
@@ -1075,7 +1047,6 @@ async def test_get_observation_omniparser_missing_viewport(monkeypatch, tmp_path
 async def test_get_observation_path_file_saved(monkeypatch, tmp_path):
     session_info = SimpleNamespace(cdp_url="http://u", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
-
     img_data = base64.b64encode(b"img").decode()
     browser_session = MagicMock()
     browser_session.agent_focus_target_id = None
@@ -1090,14 +1061,12 @@ async def test_get_observation_path_file_saved(monkeypatch, tmp_path):
         "_get_browser_session",
         AsyncMock(return_value=(browser_session, MagicMock())),
     )
-
     cdp = MagicMock()
     cdp.session_id = "s1"
     cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
         return_value={"result": {"value": {}}}
     )
     browser_session.get_or_create_cdp_session = AsyncMock(return_value=cdp)
-
     out_path = tmp_path / "shots" / "state.png"
     res = await main.get_observation("b1", screenshot=True, path=str(out_path))
     assert res["screenshot_path"] == str(out_path)
@@ -1108,7 +1077,6 @@ async def test_get_observation_path_file_saved(monkeypatch, tmp_path):
 async def test_get_observation_path_dir_saved(monkeypatch, tmp_path):
     session_info = SimpleNamespace(cdp_url="http://u", user_data_dir=str(tmp_path))
     monkeypatch.setattr(main.session_manager, "get_session", lambda _: session_info)
-
     img_data = base64.b64encode(b"img").decode()
     browser_session = MagicMock()
     browser_session.agent_focus_target_id = None
@@ -1123,14 +1091,12 @@ async def test_get_observation_path_dir_saved(monkeypatch, tmp_path):
         "_get_browser_session",
         AsyncMock(return_value=(browser_session, MagicMock())),
     )
-
     cdp = MagicMock()
     cdp.session_id = "s1"
     cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
         return_value={"result": {"value": {}}}
     )
     browser_session.get_or_create_cdp_session = AsyncMock(return_value=cdp)
-
     out_dir = tmp_path / "shots"
     out_dir.mkdir()
     res = await main.get_observation("b1", screenshot=True, path=str(out_dir))

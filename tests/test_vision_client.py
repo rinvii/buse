@@ -1,8 +1,6 @@
 import base64
-
 import httpx
 import pytest
-
 from buse.models import ViewportInfo
 from buse.vision import VisionClient
 

@@ -1,13 +1,9 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 import ipaddress
 from typing import Dict, Iterable, Optional, Any, Union
-
 from uvicorn import Config, Server
-
 from mcp.server.fastmcp import FastMCP
-
 from .session import SessionInfo, SessionManager
 
 
@@ -176,6 +172,16 @@ class BuseMCPServer:
         if self.tool_handler:
 
             @self.mcp.tool()
+            async def list_sessions() -> Union[str, Dict[str, Any]]:
+                """List active buse sessions."""
+                return {
+                    "instances": [
+                        self._serialize_session(session)
+                        for session in self.session_manager.list_sessions().values()
+                    ]
+                }
+
+            @self.mcp.tool()
             async def navigate(
                 instance_id: str, url: str, new_tab: bool = False
             ) -> Union[str, Dict[str, Any]]:
@@ -186,15 +192,32 @@ class BuseMCPServer:
                 )
 
             @self.mcp.tool()
+            async def new_tab(instance_id: str, url: str) -> Union[str, Dict[str, Any]]:
+                """Open a URL in a new tab."""
+                assert self.tool_handler
+                return await self.tool_handler(
+                    instance_id, "navigate", url=url, new_tab=True
+                )
+
+            @self.mcp.tool()
             async def click(
                 instance_id: str,
                 index: Optional[int] = None,
+                selector: Optional[str] = None,
                 element_id: Optional[Union[str, dict]] = None,
                 element_class: Optional[Union[str, dict]] = None,
                 x: Optional[int] = None,
                 y: Optional[int] = None,
+                right: bool = False,
+                middle: bool = False,
+                double: bool = False,
+                ctrl: bool = False,
+                shift: bool = False,
+                alt: bool = False,
+                meta: bool = False,
+                force: bool = False,
             ) -> Union[str, Dict[str, Any]]:
-                """Click an element by index, ID, class, or coordinates."""
+                """Click an element by index, CSS selector, ID, class, or coordinates."""
                 assert self.tool_handler
                 element_id = _coerce_optional_str(element_id)
                 element_class = _coerce_optional_str(element_class)
@@ -202,6 +225,7 @@ class BuseMCPServer:
                     raise ValueError("Provide both x and y for coordinate clicks.")
                 if (
                     index is None
+                    and selector is None
                     and x is None
                     and y is None
                     and element_id is None
@@ -210,15 +234,32 @@ class BuseMCPServer:
                     raise ValueError(
                         "Provide an index, element_id/element_class, or x/y for clicks."
                     )
-                return await self.tool_handler(
-                    instance_id,
-                    "click",
-                    index=index,
-                    element_id=element_id,
-                    element_class=element_class,
-                    coordinate_x=x,
-                    coordinate_y=y,
-                )
+                kwargs: Dict[str, Any] = {
+                    "index": index,
+                    "element_id": element_id,
+                    "element_class": element_class,
+                    "coordinate_x": x,
+                    "coordinate_y": y,
+                }
+                if selector is not None:
+                    kwargs["selector"] = selector
+                if right:
+                    kwargs["right"] = True
+                if middle:
+                    kwargs["middle"] = True
+                if double:
+                    kwargs["double"] = True
+                if ctrl:
+                    kwargs["ctrl"] = True
+                if shift:
+                    kwargs["shift"] = True
+                if alt:
+                    kwargs["alt"] = True
+                if meta:
+                    kwargs["meta"] = True
+                if force:
+                    kwargs["force"] = True
+                return await self.tool_handler(instance_id, "click", **kwargs)
 
             @self.mcp.tool()
             async def input_text(
@@ -227,6 +268,9 @@ class BuseMCPServer:
                 index: Optional[int] = None,
                 element_id: Optional[Union[str, dict]] = None,
                 element_class: Optional[Union[str, dict]] = None,
+                slowly: bool = False,
+                submit: bool = False,
+                append: bool = False,
             ) -> Union[str, Dict[str, Any]]:
                 """Input text into a field."""
                 assert self.tool_handler
@@ -236,13 +280,50 @@ class BuseMCPServer:
                     raise ValueError(
                         "Provide an index or element_id/element_class for input."
                     )
+                kwargs: Dict[str, Any] = {
+                    "text": text,
+                    "index": index,
+                    "element_id": element_id,
+                    "element_class": element_class,
+                }
+                if slowly:
+                    kwargs["slowly"] = True
+                if submit:
+                    kwargs["submit"] = True
+                if append:
+                    kwargs["append"] = True
+                return await self.tool_handler(instance_id, "input", **kwargs)
+
+            @self.mcp.tool()
+            async def fill(
+                instance_id: str,
+                fields: list[dict],
+            ) -> Union[str, Dict[str, Any]]:
+                """Fill multiple form fields in one call."""
+                assert self.tool_handler
+                if not isinstance(fields, list):
+                    raise ValueError("fields must be a list")
                 return await self.tool_handler(
                     instance_id,
-                    "input",
-                    text=text,
-                    index=index,
-                    element_id=element_id,
-                    element_class=element_class,
+                    "fill",
+                    fields=fields,
+                )
+
+            @self.mcp.tool()
+            async def drag(
+                instance_id: str,
+                start: Union[str, int],
+                end: Union[str, int],
+                html5: bool = True,
+            ) -> Union[str, Dict[str, Any]]:
+                """Drag from one element to another."""
+                assert self.tool_handler
+                return await self.tool_handler(
+                    instance_id,
+                    "drag",
+                    start=start,
+                    end=end,
+                    html5=html5,
                 )
 
             @self.mcp.tool()
@@ -413,11 +494,27 @@ class BuseMCPServer:
 
             @self.mcp.tool()
             async def wait(
-                instance_id: str, seconds: float
+                instance_id: str,
+                seconds: Optional[float] = None,
+                text: Optional[str] = None,
+                selector: Optional[str] = None,
+                network_idle: Optional[int] = None,
+                timeout: Optional[int] = None,
             ) -> Union[str, Dict[str, Any]]:
-                """Wait for a specified number of seconds."""
+                """Wait for a specified number of seconds or a condition."""
                 assert self.tool_handler
-                return await self.tool_handler(instance_id, "wait", seconds=seconds)
+                kwargs: Dict[str, Any] = {}
+                if seconds is not None:
+                    kwargs["seconds"] = seconds
+                if text is not None:
+                    kwargs["text"] = text
+                if selector is not None:
+                    kwargs["selector"] = selector
+                if network_idle is not None:
+                    kwargs["network_idle"] = network_idle
+                if timeout is not None:
+                    kwargs["timeout"] = timeout
+                return await self.tool_handler(instance_id, "wait", **kwargs)
 
             @self.mcp.tool()
             async def save_state(
@@ -460,18 +557,39 @@ class BuseMCPServer:
             @self.mcp.tool()
             async def observe(
                 instance_id: str,
-                screenshot: bool = False,
-                no_dom: bool = False,
-                omniparser: bool = False,
+                visual: str = "som",
+                text: str = "ai",
+                mode: str = "efficient",
+                max_chars: Optional[int] = None,
+                max_labels: Optional[int] = None,
+                selector: Optional[str] = None,
+                frame: Optional[str] = None,
+                screenshot: Optional[bool] = None,
+                no_dom: Optional[bool] = None,
+                omniparser: Optional[bool] = None,
             ) -> Union[str, Dict[str, Any]]:
-                """Observe the current state of the browser (DOM, tabs, screenshot, OmniParser)."""
+                """Observe the current state of the browser. visual: som|omni|none, text: ai|semantic|dom|none, mode: efficient|full."""
                 assert self.observation_handler
-                return await self.observation_handler(
-                    instance_id,
-                    screenshot=screenshot,
-                    no_dom=no_dom,
-                    omniparser=omniparser,
-                )
+                if text == "semantic":
+                    text = "ai"
+                kwargs: Dict[str, Any] = {}
+                if screenshot is not None:
+                    kwargs["screenshot"] = screenshot
+                if no_dom is not None:
+                    kwargs["no_dom"] = no_dom
+                if omniparser is not None:
+                    kwargs["omniparser"] = omniparser
+                if max_chars is not None:
+                    kwargs["max_chars"] = max_chars
+                if max_labels is not None:
+                    kwargs["max_labels"] = max_labels
+                if selector is not None:
+                    kwargs["selector"] = selector
+                if frame is not None:
+                    kwargs["frame"] = frame
+                if not kwargs:
+                    kwargs = {"visual": visual, "text": text, "mode": mode}
+                return await self.observation_handler(instance_id, **kwargs)
 
     def _serialize_session(self, session: SessionInfo) -> Dict[str, str]:
         return SessionSummary(
@@ -493,7 +611,6 @@ class BuseMCPServer:
         transport: str = "streamable-http",
     ) -> None:
         """Start the FastMCP server. This call blocks until the process is interrupted."""
-
         if transport == "stdio":
             import sys
 
@@ -501,7 +618,6 @@ class BuseMCPServer:
             sys.stderr.flush()
             self.mcp.run(transport="stdio")
             return
-
         if transport == "streamable-http":
             app = self.mcp.streamable_http_app()
         elif transport == "sse":
@@ -510,7 +626,6 @@ class BuseMCPServer:
             raise ValueError(
                 "Unsupported transport. Choose 'stdio', 'streamable-http' or 'sse'."
             )
-
         app = _wrap_with_access_guard(
             app,
             allow_remote=self.allow_remote,

@@ -1,9 +1,7 @@
 import json
 from pathlib import Path
-
 import pytest
 import psutil
-
 from buse.session import SessionInfo, SessionManager
 
 
@@ -90,11 +88,9 @@ def test_is_alive(monkeypatch, tmp_path):
     monkeypatch.setattr("psutil.pid_exists", lambda pid: True)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: True)
     assert manager.is_alive(session) is True
-
     monkeypatch.setattr("psutil.pid_exists", lambda pid: True)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: False)
     assert manager.is_alive(session) is False
-
     monkeypatch.setattr("psutil.pid_exists", lambda pid: False)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: False)
     assert manager.is_alive(session) is False
@@ -139,7 +135,6 @@ def test_start_session_new(monkeypatch, tmp_path):
         pid=3,
         user_data_dir="/tmp",
     )
-
     captured = {}
 
     class FakeProcess:
@@ -158,7 +153,6 @@ def test_start_session_new(monkeypatch, tmp_path):
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: True)
     monkeypatch.setattr("time.sleep", lambda *_: None)
-
     info = manager.start_session("b1", headless=True)
     assert info.instance_id == "b1"
     assert info.cdp_url.endswith(":9223")
@@ -187,7 +181,6 @@ def test_start_session_windows_creationflags(monkeypatch, tmp_path):
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: True)
     monkeypatch.setattr("time.sleep", lambda *_: None)
-
     manager.start_session("b1", headless=False)
     assert "creationflags" in captured["kwargs"]
 
@@ -204,13 +197,11 @@ def test_start_session_cdp_not_ready(monkeypatch, tmp_path):
             raise RuntimeError("kill failed")
 
     proc = FakeProcess()
-
     monkeypatch.setattr(manager, "_find_chrome_executable", lambda: "/bin/chrome")
     monkeypatch.setattr(manager, "_find_free_port", lambda reserved_ports: 9222)
     monkeypatch.setattr("subprocess.Popen", lambda *a, **k: proc)
     monkeypatch.setattr(manager, "_cdp_ready", lambda url: False)
     monkeypatch.setattr("time.sleep", lambda *_: None)
-
     with pytest.raises(RuntimeError):
         manager.start_session("b1")
     assert proc.killed is True
@@ -307,26 +298,21 @@ def test_find_chrome_executable(monkeypatch, tmp_path):
     monkeypatch.setattr("platform.system", lambda: "Darwin")
     monkeypatch.setattr(Path, "exists", fake_exists)
     assert manager._find_chrome_executable().endswith("Google Chrome")
-
     monkeypatch.setattr("platform.system", lambda: "Darwin")
     monkeypatch.setattr(Path, "exists", lambda p: False)
     with pytest.raises(RuntimeError):
         manager._find_chrome_executable()
-
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
     assert manager._find_chrome_executable().startswith("/usr/bin/")
-
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr("shutil.which", lambda cmd: None)
     with pytest.raises(RuntimeError):
         manager._find_chrome_executable()
-
     monkeypatch.setattr("platform.system", lambda: "Windows")
     monkeypatch.setattr("shutil.which", lambda cmd: "C:\\\\Chrome\\\\chrome.exe")
     monkeypatch.setattr(Path, "exists", lambda p: False)
     assert manager._find_chrome_executable().endswith("chrome.exe")
-
     monkeypatch.setattr("platform.system", lambda: "Other")
     with pytest.raises(RuntimeError):
         manager._find_chrome_executable()
@@ -376,7 +362,6 @@ def test_stop_session(monkeypatch, tmp_path):
     monkeypatch.setattr("psutil.Process", lambda pid: FakeProc())
     manager.stop_session("b1")
     assert "b1" not in manager.sessions
-
     manager.sessions["b2"] = SessionInfo(
         instance_id="b2", cdp_url="http://x", pid=2, user_data_dir="/tmp"
     )

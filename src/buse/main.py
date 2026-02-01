@@ -6,29 +6,36 @@ import os
 import sys
 import time
 import httpx
+import importlib
+import inspect
+from enum import Enum
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Any
-
+from typing import Optional, Any, Union
 import typer
-
+from browser_use.browser import BrowserSession
 from .models import ActionResult, Observation, TabInfo
 from .mcp_server import BuseMCPServer
 from .session import SessionManager
 from .utils import OutputFormat, handle_errors, output_data, state, _serialize
+from .features import inspection, interaction
 
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ["BROWSER_USE_LOGGING_LEVEL"] = "critical"
 os.environ["CDP_LOGGING_LEVEL"] = "critical"
 os.environ["BROWSER_USE_SETUP_LOGGING"] = "true"
-
 logging.getLogger("browser_use").setLevel(logging.CRITICAL)
 logging.getLogger("bubus").setLevel(logging.CRITICAL)
 logging.getLogger().setLevel(logging.CRITICAL)
 logging.disable(logging.CRITICAL)
-
 session_manager = SessionManager()
 instance_app = typer.Typer(no_args_is_help=True)
+
+
+def _resolve_option_default(value, default):
+    if hasattr(value, "default"):
+        return value.default
+    return default if value is None else value
 
 
 async def get_observation(
@@ -37,6 +44,14 @@ async def get_observation(
     path: Optional[str] = None,
     omniparser: bool = False,
     no_dom: bool = False,
+    som: bool = False,
+    diagnostics: bool = False,
+    semantic: bool = False,
+    mode: str = "efficient",
+    max_chars: Optional[int] = None,
+    max_labels: Optional[int] = None,
+    selector: Optional[str] = None,
+    frame: Optional[str] = None,
 ) -> dict:
     if omniparser and not os.getenv("BUSE_OMNIPARSER_URL"):
         raise ValueError(
@@ -54,31 +69,28 @@ async def get_observation(
                 _mark_omniparser_probe(endpoint)
             except Exception as e:
                 raise RuntimeError(f"OmniParser probe failed: {e}")
-
     start_session = time.perf_counter()
     session_info = session_manager.get_session(instance_id)
     get_session_ms = (time.perf_counter() - start_session) * 1000.0
     if not session_info:
         await _stop_cached_browser_session(instance_id)
         raise ValueError(f"Instance {instance_id} not found.")
-
     start_browser = time.perf_counter()
     browser_session, _ = await _get_browser_session(instance_id, session_info)
     get_browser_session_ms = (time.perf_counter() - start_browser) * 1000.0
-
+    event = None
     try:
         profile_extra: dict[str, float] = {}
         start_state = time.perf_counter()
-        include_screenshot = screenshot
-
+        include_screenshot = screenshot and not som
         try:
-            if no_dom:
-                from browser_use.browser.events import BrowserStateRequestEvent
-
+            if no_dom and not som:
+                events_mod = importlib.import_module("browser_use.browser.events")
+                event_cls = getattr(events_mod, "BrowserStateRequestEvent", None)
+                if event_cls is None:
+                    raise RuntimeError("BrowserStateRequestEvent not available")
                 event = browser_session.event_bus.dispatch(
-                    BrowserStateRequestEvent(
-                        include_dom=False, include_screenshot=include_screenshot
-                    )
+                    event_cls(include_dom=False, include_screenshot=include_screenshot)
                 )
                 state_summary = await asyncio.wait_for(
                     event.event_result(raise_if_none=True, raise_if_any=True),
@@ -92,47 +104,99 @@ async def get_observation(
                     timeout=30.0,
                 )
         except Exception as e:
-            if "timeout" in str(e).lower() and include_screenshot:
-                if no_dom:
-                    from browser_use.browser.events import BrowserStateRequestEvent
-
-                    event = browser_session.event_bus.dispatch(
-                        BrowserStateRequestEvent(
-                            include_dom=False, include_screenshot=include_screenshot
+            if "timeout" in str(e).lower():
+                try:
+                    if no_dom and not som and event is not None:
+                        state_summary = await asyncio.wait_for(
+                            event.event_result(raise_if_none=True, raise_if_any=True),
+                            timeout=30.0,
                         )
-                    )
-                    state_summary = await asyncio.wait_for(
-                        event.event_result(raise_if_none=True, raise_if_any=True),
-                        timeout=30.0,
-                    )
-                else:
-                    state_summary = await asyncio.wait_for(
-                        browser_session.get_browser_state_summary(
-                            include_screenshot=include_screenshot
-                        ),
-                        timeout=30.0,
-                    )
+                    elif include_screenshot:
+                        state_summary = await asyncio.wait_for(
+                            browser_session.get_browser_state_summary(
+                                include_screenshot=include_screenshot
+                            ),
+                            timeout=30.0,
+                        )
+                    else:
+                        raise RuntimeError("Failed to capture browser state")
+                except Exception as e2:
+                    if "timeout" in str(e2).lower():
+                        raise RuntimeError("Timeout (timed out twice).")
+                    raise RuntimeError(f"Failed to capture browser state: {e2}")
             else:
-                raise
-
+                raise RuntimeError(f"Failed to capture browser state: {e}")
         state_ms = (time.perf_counter() - start_state) * 1000.0
         if not no_dom:
             _selector_cache[instance_id] = time.time()
         focused_id = browser_session.agent_focus_target_id
         screenshot_data = state_summary.screenshot
         cdp_screenshot_error = None
-        needs_screenshot = screenshot or omniparser
+        needs_screenshot = screenshot or omniparser or som
         omniparser_shot_dir = None
         omniparser_image_data = None
         som_path = None
-
+        som_labels_count = None
+        som_labels_skipped = None
+        semantic_snapshot_text = None
+        semantic_snapshot_truncated = None
+        diagnostics_data = None
         viewport_data = None
         try:
-            cdp_session = await browser_session.get_or_create_cdp_session()
+            cdp_session_res = browser_session.get_or_create_cdp_session()
+            cdp_session = (
+                await cdp_session_res
+                if inspect.isawaitable(cdp_session_res)
+                else cdp_session_res
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to access browser via CDP (CDP access failed): {e}"
+            )
+        if semantic:
+            start_semantic = time.perf_counter()
+            selector_map_semantic = await browser_session.get_selector_map()
+            ax_nodes = await inspection.get_accessibility_tree(cdp_session)
+            resolved_max_chars = inspection.resolve_semantic_max_chars(mode, max_chars)
+            root_backend_id = None
+            refs_out: dict[str, dict[str, Any]] = {}
+            if selector or frame:
+                root_backend_id = await inspection.resolve_backend_node_id_for_selector(
+                    cdp_session, selector=selector, frame_selector=frame
+                )
+                if root_backend_id is None:
+                    raise ValueError("Selector/frame scope not found or inaccessible.")
+            semantic_snapshot_text, semantic_snapshot_truncated = (
+                inspection.format_semantic_snapshot(
+                    ax_nodes,
+                    selector_map_semantic,
+                    mode=mode,
+                    max_chars=resolved_max_chars,
+                    root_backend_id=root_backend_id,
+                    refs_out=refs_out,
+                    include_refs=True,
+                )
+            )
+            inspection.store_semantic_refs(
+                focused_id,
+                refs_out,
+                instance_id=instance_id,
+                persist_path=str(_semantic_refs_path(session_info)),
+            )
+            profile_extra["semantic_snapshot_ms"] = (
+                time.perf_counter() - start_semantic
+            ) * 1000.0
+        if diagnostics:
+            start_diag = time.perf_counter()
+            diagnostics_data = await inspection.get_diagnostics(cdp_session)
+            profile_extra["diagnostics_ms"] = (
+                time.perf_counter() - start_diag
+            ) * 1000.0
+        try:
             viewport_res = await asyncio.wait_for(
                 cdp_session.cdp_client.send.Runtime.evaluate(
                     params={
-                        "expression": "({width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio})",
+                        "expression": "({width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio, scrollX: window.scrollX, scrollY: window.scrollY})",
                         "returnByValue": True,
                     },
                     session_id=cdp_session.session_id,
@@ -141,34 +205,53 @@ async def get_observation(
             )
             viewport_data = viewport_res.get("result", {}).get("value")
             if needs_screenshot and not screenshot_data:
-                capture = await asyncio.wait_for(
-                    cdp_session.cdp_client.send.Page.captureScreenshot(
-                        params={"format": "png"},
-                        session_id=cdp_session.session_id,
-                    ),
-                    timeout=15.0,
-                )
-                capture_data = (
-                    capture.get("data") if isinstance(capture, dict) else None
-                )
-                if isinstance(capture_data, str) and capture_data:
-                    screenshot_data = capture_data
+                if som:
+                    start_som = time.perf_counter()
+                    selector_map = await browser_session.get_selector_map()
+                    img_data, count, skipped = await inspection.screenshot_with_labels(
+                        cdp_session,
+                        selector_map,
+                        viewport=viewport_data,
+                        max_labels=max_labels if max_labels is not None else 150,
+                    )
+                    screenshot_data = (
+                        base64.b64encode(img_data).decode("utf-8")
+                        if isinstance(img_data, bytes)
+                        else img_data
+                    )
+                    som_labels_count = count
+                    som_labels_skipped = skipped
+                    profile_extra["som_ms"] = (time.perf_counter() - start_som) * 1000.0
                 else:
-                    cdp_screenshot_error = "CDP capture returned no data"
+                    capture = await asyncio.wait_for(
+                        cdp_session.cdp_client.send.Page.captureScreenshot(
+                            params={"format": "png"},
+                            session_id=cdp_session.session_id,
+                        ),
+                        timeout=15.0,
+                    )
+                    capture_data = (
+                        capture.get("data") if isinstance(capture, dict) else None
+                    )
+                    if isinstance(capture_data, str) and capture_data:
+                        screenshot_data = capture_data
+                    else:
+                        cdp_screenshot_error = "CDP capture returned no data"
         except Exception as e:
             if not screenshot_data and needs_screenshot:
                 raise RuntimeError(f"CDP access failed: {e}")
-
         viewport = None
         if viewport_data:
             from .models import ViewportInfo
 
-            viewport = ViewportInfo(**viewport_data)
-
+            viewport = ViewportInfo(
+                width=viewport_data.get("width"),
+                height=viewport_data.get("height"),
+                device_pixel_ratio=viewport_data.get("device_pixel_ratio"),
+            )
         omniparser_quality = quality_override if quality_override is not None else 95
         som_quality = quality_override if quality_override is not None else 75
         visual_analysis = None
-
         if omniparser:
             omniparser_start = time.perf_counter() if state.profile else None
             if not screenshot_data:
@@ -177,7 +260,6 @@ async def get_observation(
                 )
             if not viewport:
                 raise RuntimeError("Missing viewport for OmniParser")
-
             omniparser_shot_dir = Path(session_info.user_data_dir) / "screenshots"
             if path:
                 p = Path(path)
@@ -187,7 +269,6 @@ async def get_observation(
                     omniparser_shot_dir = p.parent
             if omniparser_shot_dir:
                 omniparser_shot_dir.mkdir(exist_ok=True, parents=True)
-
             from .vision import VisionClient
             from .utils import downscale_image
 
@@ -195,45 +276,44 @@ async def get_observation(
             omniparser_image_data = downscale_image(
                 screenshot_data, quality=omniparser_quality
             )
+            if not omniparser_image_data:
+                raise RuntimeError("OmniParser image preprocessing failed")
             analysis, som_image_base64 = await asyncio.wait_for(
                 client.analyze(omniparser_image_data, viewport), timeout=60.0
             )
-
             if not analysis.elements:
                 raise RuntimeError("OmniParser returned no elements")
-
             if som_image_base64 and omniparser_shot_dir:
+                som_start = time.perf_counter() if state.profile else None
                 som_image_base64 = downscale_image(
                     som_image_base64, quality=som_quality
                 )
                 som_path = str(omniparser_shot_dir / "image_som.jpg")
                 client.save_som_image(som_image_base64, som_path)
                 analysis.som_image_path = som_path
-
+                if som_start is not None:
+                    profile_extra["omniparser_som_ms"] = (
+                        time.perf_counter() - som_start
+                    ) * 1000.0
             visual_analysis = analysis
             if omniparser_start is not None:
                 profile_extra["omniparser_total_ms"] = (
                     time.perf_counter() - omniparser_start
                 ) * 1000.0
-
         start_tabs = time.perf_counter()
         tabs = [
             TabInfo(id=t.target_id, title=t.title, url=t.url)
             for t in await browser_session.get_tabs()
         ]
         tabs_ms = (time.perf_counter() - start_tabs) * 1000.0
-
         screenshot_path = None
         screenshot_ms = 0.0
-
-        if (screenshot or omniparser) and screenshot_data:
+        if (screenshot or omniparser or som) and screenshot_data:
             start_shot = time.perf_counter()
             write_path = None
             if omniparser and omniparser_shot_dir:
                 shot_data = omniparser_image_data
-
                 write_path = str(omniparser_shot_dir / "image.jpg")
-
                 screenshot_path = som_path or write_path
             else:
                 shot_data = screenshot_data
@@ -252,16 +332,15 @@ async def get_observation(
                             p.parent.mkdir(exist_ok=True, parents=True)
                         screenshot_path = str(p)
                 write_path = screenshot_path
-
             if write_path and shot_data:
                 with open(write_path, "wb") as f:
                     f.write(base64.b64decode(shot_data))
                 screenshot_ms = (time.perf_counter() - start_shot) * 1000.0
-
         obs = Observation(
             session_id=instance_id,
             url=state_summary.url,
             title=state_summary.title,
+            observed_at=time.time(),
             visual_analysis=visual_analysis,
             tabs=tabs,
             viewport=viewport,
@@ -273,8 +352,12 @@ async def get_observation(
                 if state_summary.dom_state
                 else ""
             ),
+            semantic_snapshot=semantic_snapshot_text,
+            semantic_truncated=semantic_snapshot_truncated,
+            diagnostics=diagnostics_data,
+            som_labels=som_labels_count,
+            som_labels_skipped=som_labels_skipped,
         )
-
         data = obs.model_dump()
         data["focused_tab_id"] = focused_id
         if state.profile:
@@ -286,9 +369,7 @@ async def get_observation(
                 "write_screenshot_ms": screenshot_ms,
                 **profile_extra,
             }
-
         return data
-
     finally:
         if not _should_keep_session():
             await _stop_cached_browser_session(instance_id)
@@ -299,8 +380,7 @@ async def run_save_state(instance_id: str, path: str) -> dict:
     if session_info is None:
         await _stop_cached_browser_session(instance_id)
         raise ValueError(f"Instance {instance_id} not found.")
-
-    browser_session = BrowserSession(cdp_url=session_info.cdp_url)
+    browser_session: Any = BrowserSession(cdp_url=session_info.cdp_url)
     await browser_session.start()
     try:
         state_data = await browser_session.export_storage_state(output_path=path)
@@ -351,6 +431,112 @@ def _parse_bool_env(name: str) -> Optional[bool]:
 server_app = typer.Typer(no_args_is_help=False)
 
 
+def _output_human(data: dict) -> None:
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.tree import Tree
+        from rich.markup import escape
+        import sys
+
+        console = Console(file=sys.stdout, highlight=False)
+        console.print(
+            f"\n[bold blue]🌐 {escape(data.get('title', 'Unknown Title'))}[/bold blue]"
+        )
+        console.print(f"[dim]🔗 {escape(data.get('url', 'Unknown URL'))}[/dim]\n")
+        snapshot = data.get("semantic_snapshot", "")
+        if snapshot:
+            lines = [line for line in snapshot.split("\n") if line.strip()]
+            if lines:
+                root_text = lines[0].strip("- ")
+                tree = Tree(f"[bold green]{escape(root_text)}[/bold green]")
+                stack = {0: tree}
+                for line in lines[1:]:
+                    stripped = line.lstrip()
+                    indent_len = len(line) - len(stripped)
+                    depth = indent_len // 2
+                    content = stripped.strip("- ")
+                    if not content:
+                        continue
+                    if content.startswith("..."):
+                        parent = stack.get(depth - 1, tree)
+                        parent.add(f"[dim]{escape(content)}[/dim]")
+                        continue
+                    from rich.text import Text
+
+                    node_text = Text()
+                    if content.startswith("[") and "]" in content:
+                        end_bracket = content.find("]")
+                        role_info = content[1:end_bracket]
+                        text_info = content[end_bracket + 1 :].strip()
+                        if "#" in role_info:
+                            node_text.append(f"[{role_info}]", style="bold yellow")
+                        else:
+                            node_text.append(f"[{role_info}]", style="cyan")
+                        if text_info:
+                            node_text.append(f" {text_info}")
+                    else:
+                        node_text.append(content)
+                    parent_depth = depth - 1
+                    while parent_depth >= 0 and parent_depth not in stack:
+                        parent_depth -= 1
+                    parent = stack.get(parent_depth, tree)
+                    node = parent.add(node_text)
+                    stack[depth] = node
+                console.print(
+                    Panel(
+                        tree,
+                        title="[bold]Semantic AXTree[/bold]",
+                        border_style="blue",
+                        expand=False,
+                    )
+                )
+        diag = data.get("diagnostics", {})
+        if diag:
+            console.print("\n[bold]🛠 Diagnostics:[/bold]")
+            has_errors = False
+            if diag.get("console"):
+                console.print(
+                    f"  ❌ [red]{len(diag['console'])} Console Messages[/red]"
+                )
+                has_errors = True
+            if diag.get("network_errors"):
+                console.print(
+                    f"  ⚠️ [yellow]{len(diag['network_errors'])} Network Resource Errors[/yellow]"
+                )
+                has_errors = True
+            if diag.get("network_requests"):
+                console.print(
+                    f"  📡 [cyan]{len(diag['network_requests'])} Network Requests[/cyan]"
+                )
+            if diag.get("page_errors"):
+                console.print(f"  💥 [red]{len(diag['page_errors'])} Page Errors[/red]")
+                has_errors = True
+            if not has_errors:
+                console.print("  ✅ [green]No errors detected.[/green]")
+        if data.get("screenshot_path"):
+            console.print(f"\n[bold]📸 Screenshot:[/bold] {data['screenshot_path']}")
+        if data.get("som_labels") is not None:
+            skipped = data.get("som_labels_skipped")
+            if skipped:
+                console.print(
+                    f"[bold]🏷 SoM Labels:[/bold] [bold yellow]{data['som_labels']}[/bold yellow] marked, [bold yellow]{skipped}[/bold yellow] skipped."
+                )
+            else:
+                console.print(
+                    f"[bold]🏷 SoM Labels:[/bold] [bold yellow]{data['som_labels']}[/bold yellow] elements marked."
+                )
+        if data.get("semantic_truncated"):
+            console.print(
+                "[bold]✂️ Semantic Snapshot:[/bold] [yellow]Truncated[/yellow]"
+            )
+        console.print("")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"Error rendering human output: {e}")
+        output_data(data)
+
+
 def _format_mcp_output(result: Any) -> Any:
     dumped = _serialize(result)
     if state.format == OutputFormat.toon:
@@ -372,6 +558,294 @@ def _make_mcp_tool_handler():
         if action_name == "start":
             result = await run_start(instance_id)
             return _format_mcp_output(result)
+        if action_name == "click":
+            index = kwargs.get("index")
+            selector = kwargs.get("selector")
+            x = kwargs.get("x")
+            y = kwargs.get("y")
+            if x is None and y is None:
+                x = kwargs.get("coordinate_x")
+                y = kwargs.get("coordinate_y")
+            element_id = kwargs.get("element_id")
+            element_class = kwargs.get("element_class")
+            right = kwargs.get("right", False)
+            middle = kwargs.get("middle", False)
+            double = kwargs.get("double", False)
+            ctrl = kwargs.get("ctrl", False)
+            shift = kwargs.get("shift", False)
+            alt = kwargs.get("alt", False)
+            meta = kwargs.get("meta", False)
+            force = kwargs.get("force", False)
+            if (
+                x is None
+                and y is None
+                and index is None
+                and selector is None
+                and element_id is None
+                and element_class is None
+            ):
+                result = await execute_tool(
+                    instance_id,
+                    action_name,
+                    kwargs,
+                    return_result=True,
+                    action_label=action_label,
+                )
+                if hasattr(result, "model_dump"):
+                    result = result.model_dump()
+                return _format_mcp_output(result)
+            session_info = session_manager.get_session(instance_id)
+            if not session_info:
+                raise ValueError(f"Instance {instance_id} not found.")
+            browser_session, _ = await _get_browser_session(instance_id, session_info)
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            button = "right" if right else "middle" if middle else "left"
+            click_count = 2 if double else 1
+            modifiers = []
+            if ctrl:
+                modifiers.append("ctrl")
+            if shift:
+                modifiers.append("shift")
+            if alt:
+                modifiers.append("alt")
+            if meta:
+                modifiers.append("meta")
+            try:
+                if x is not None and y is not None:
+                    mask = 0
+                    if alt:
+                        mask |= 1
+                    if ctrl:
+                        mask |= 2
+                    if meta:
+                        mask |= 4
+                    if shift:
+                        mask |= 8
+                    await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+                        params={
+                            "x": x,
+                            "y": y,
+                            "button": button,
+                            "clickCount": click_count,
+                            "modifiers": mask,
+                            "type": "mousePressed",
+                        },
+                        session_id=cdp_session.session_id,
+                    )
+                    await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+                        params={
+                            "x": x,
+                            "y": y,
+                            "button": button,
+                            "clickCount": click_count,
+                            "modifiers": mask,
+                            "type": "mouseReleased",
+                        },
+                        session_id=cdp_session.session_id,
+                    )
+                    result = {"success": True, "action": "click", "x": x, "y": y}
+                else:
+                    target = index if index is not None else selector
+                    if target is None:
+                        if element_id:
+                            target = f"#{element_id}"
+                        elif element_class:
+                            target = f".{element_class}"
+                    if target is None:
+                        raise ValueError("Provide a click target.")
+                    await _ensure_selector_map(browser_session, instance_id)
+                    selector_map = await browser_session.get_selector_map()
+                    target_id = browser_session.agent_focus_target_id
+
+                    async def refresh_selector_map():
+                        await _ensure_selector_map(
+                            browser_session, instance_id, force=True
+                        )
+                        return await browser_session.get_selector_map()
+
+                    try:
+                        coords = await interaction.click_with_retry(
+                            cdp_session,
+                            target,
+                            selector_map=selector_map,
+                            refresh_selector_map=refresh_selector_map,
+                            modifiers=modifiers,
+                            button=button,
+                            click_count=click_count,
+                            force=force,
+                            timeout_ms=5000,
+                            debug=False,
+                            target_id=target_id,
+                            instance_id=instance_id,
+                            persist_path=str(_semantic_refs_path(session_info)),
+                        )
+                        result = {
+                            "success": True,
+                            "action": "click",
+                            "target": target,
+                            "coords": coords,
+                        }
+                    except Exception:
+                        result = await execute_tool(
+                            instance_id,
+                            "click",
+                            {
+                                "index": index,
+                                "selector": selector,
+                                "element_id": element_id,
+                                "element_class": element_class,
+                                "coordinate_x": x,
+                                "coordinate_y": y,
+                            },
+                            return_result=True,
+                            action_label=action_label,
+                        )
+                        if hasattr(result, "model_dump"):
+                            result = result.model_dump()
+                        return _format_mcp_output(result)
+            finally:
+                if not _should_keep_session():
+                    await _stop_cached_browser_session(instance_id)
+            return _format_mcp_output(result)
+        if action_name == "input":
+            text = kwargs.get("text")
+            index = kwargs.get("index")
+            element_id = kwargs.get("element_id")
+            element_class = kwargs.get("element_class")
+            slowly = bool(kwargs.get("slowly", False))
+            submit = bool(kwargs.get("submit", False))
+            append = bool(kwargs.get("append", False))
+            if text is None:
+                raise ValueError("text is required")
+            if index is None and element_id is None and element_class is None:
+                raise ValueError(
+                    "Provide an index or element_id/element_class for input."
+                )
+            if append or slowly or submit:
+                session_info = session_manager.get_session(instance_id)
+                if not session_info:
+                    raise ValueError(f"Instance {instance_id} not found.")
+                browser_session, _ = await _get_browser_session(
+                    instance_id, session_info
+                )
+                cdp_session = await browser_session.get_or_create_cdp_session()
+                await _ensure_selector_map(browser_session, instance_id)
+                selector_map = await browser_session.get_selector_map()
+                target_id = browser_session.agent_focus_target_id
+                target = None
+                if index is not None:
+                    target = index
+                elif element_id:
+                    target = f"#{element_id}"
+                elif element_class:
+                    target = f".{element_class}"
+                if target is None:
+                    raise ValueError("Provide an input target.")
+                try:
+                    result = await interaction.type_text(
+                        cdp_session,
+                        target,
+                        text,
+                        selector_map=selector_map,
+                        slowly=slowly,
+                        submit=submit,
+                        append=append,
+                        target_id=target_id,
+                        instance_id=instance_id,
+                        persist_path=str(_semantic_refs_path(session_info)),
+                    )
+                finally:
+                    if not _should_keep_session():
+                        await _stop_cached_browser_session(instance_id)
+                return _format_mcp_output(
+                    {"success": True, "action": "input", "result": result}
+                )
+        if action_name == "wait":
+            text = kwargs.get("text")
+            selector = kwargs.get("selector")
+            network_idle = kwargs.get("network_idle")
+            timeout = kwargs.get("timeout")
+            seconds = kwargs.get("seconds")
+            has_condition = any(v is not None for v in [text, selector, network_idle])
+            if has_condition:
+                session_info = session_manager.get_session(instance_id)
+                if not session_info:
+                    raise ValueError(f"Instance {instance_id} not found.")
+                browser_session, _ = await _get_browser_session(
+                    instance_id, session_info
+                )
+                cdp_session = await browser_session.get_or_create_cdp_session()
+                try:
+                    result = await interaction.wait_for_condition(
+                        cdp_session,
+                        text=text,
+                        selector=selector,
+                        network_idle_ms=network_idle,
+                        timeout_ms=int((timeout or 10) * 1000),
+                    )
+                finally:
+                    if not _should_keep_session():
+                        await _stop_cached_browser_session(instance_id)
+                return _format_mcp_output(
+                    {"success": True, "action": "wait", "result": result}
+                )
+            if seconds is None:
+                raise ValueError("Provide seconds or a wait condition.")
+        if action_name == "fill":
+            fields = kwargs.get("fields")
+            if not isinstance(fields, list):
+                raise ValueError("fields must be a list")
+            session_info = session_manager.get_session(instance_id)
+            if not session_info:
+                raise ValueError(f"Instance {instance_id} not found.")
+            browser_session, _ = await _get_browser_session(instance_id, session_info)
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            await _ensure_selector_map(browser_session, instance_id)
+            selector_map = await browser_session.get_selector_map()
+            target_id = browser_session.agent_focus_target_id
+            try:
+                result = await interaction.fill_form_atomic(
+                    cdp_session,
+                    fields,
+                    selector_map=selector_map,
+                    target_id=target_id,
+                    instance_id=instance_id,
+                    persist_path=str(_semantic_refs_path(session_info)),
+                )
+            finally:
+                if not _should_keep_session():
+                    await _stop_cached_browser_session(instance_id)
+            return _format_mcp_output(result)
+        if action_name == "drag":
+            start = kwargs.get("start")
+            end = kwargs.get("end")
+            if start is None or end is None:
+                raise ValueError("start and end are required")
+            session_info = session_manager.get_session(instance_id)
+            if not session_info:
+                raise ValueError(f"Instance {instance_id} not found.")
+            browser_session, _ = await _get_browser_session(instance_id, session_info)
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            await _ensure_selector_map(browser_session, instance_id)
+            selector_map = await browser_session.get_selector_map()
+            target_id = browser_session.agent_focus_target_id
+            try:
+                result = await interaction.drag_and_drop(
+                    cdp_session,
+                    start,
+                    end,
+                    selector_map=selector_map,
+                    html5=kwargs.get("html5", True),
+                    target_id=target_id,
+                    instance_id=instance_id,
+                    persist_path=str(_semantic_refs_path(session_info)),
+                )
+            finally:
+                if not _should_keep_session():
+                    await _stop_cached_browser_session(instance_id)
+            return _format_mcp_output(
+                {"success": True, "action": "drag", "result": result}
+            )
         result = await execute_tool(
             instance_id,
             action_name,
@@ -389,15 +863,43 @@ def _make_mcp_tool_handler():
 def _make_mcp_observation_handler():
     async def observation_handler(
         instance_id: str,
-        screenshot: bool = False,
-        no_dom: bool = False,
-        omniparser: bool = False,
+        visual: str = "som",
+        text: str = "ai",
+        mode: str = "efficient",
+        max_chars: Optional[int] = None,
+        max_labels: Optional[int] = None,
+        selector: Optional[str] = None,
+        frame: Optional[str] = None,
+        screenshot: Optional[bool] = None,
+        no_dom: Optional[bool] = None,
+        omniparser: Optional[bool] = None,
     ):
+        do_screenshot = visual != "none"
+        do_som = visual == "som"
+        do_omni = visual == "omni"
+        do_semantic = text == "ai"
+        do_no_dom = text != "dom"
+        if screenshot is not None:
+            do_screenshot = bool(screenshot)
+        if omniparser is not None:
+            do_omni = bool(omniparser)
+            if do_omni:
+                do_screenshot = True
+        if no_dom is not None:
+            do_no_dom = bool(no_dom)
         result = await get_observation(
             instance_id,
-            screenshot=screenshot,
-            no_dom=no_dom,
-            omniparser=omniparser,
+            screenshot=do_screenshot,
+            som=do_som,
+            omniparser=do_omni,
+            semantic=do_semantic,
+            no_dom=do_no_dom,
+            diagnostics=True,
+            mode=mode,
+            max_chars=max_chars,
+            max_labels=max_labels,
+            selector=selector,
+            frame=frame,
         )
         return _format_mcp_output(result)
 
@@ -447,7 +949,6 @@ def run_mcp_server(
 ):
     """Run a minimal MCP server that exposes active buse sessions."""
     state.format = output_format
-
     server = BuseMCPServer(
         session_manager,
         server_name=name,
@@ -505,6 +1006,10 @@ def _normalize_omniparser_endpoint(endpoint: str) -> str:
 
 def _settings_path() -> Path:
     return session_manager.config_dir / "settings.json"
+
+
+def _semantic_refs_path(session_info) -> Path:
+    return Path(session_info.user_data_dir) / "semantic_refs.json"
 
 
 def _load_settings() -> dict:
@@ -778,26 +1283,32 @@ async def _stop_cached_browser_session(instance_id: str) -> None:
     _selector_cache.pop(instance_id, None)
 
 
-from browser_use.browser import BrowserSession  # noqa: E402
-from browser_use.filesystem.file_system import FileSystem  # noqa: E402
+_DEFAULT_BROWSER_SESSION = BrowserSession
+_filesystem_mod = importlib.import_module("browser_use.filesystem.file_system")
+FileSystem = getattr(_filesystem_mod, "FileSystem")
 
 
 async def _get_browser_session(instance_id: str, session_info):
     browser_session = _browser_sessions.get(instance_id)
     file_system = _file_systems.get(instance_id)
-
     if browser_session is None:
-        browser_session = BrowserSession(cdp_url=session_info.cdp_url)
+        browser_session_cls = BrowserSession
+        try:
+            browser_mod = importlib.import_module("browser_use.browser")
+            alt_cls = getattr(browser_mod, "BrowserSession", None)
+            if alt_cls is not None and alt_cls is not _DEFAULT_BROWSER_SESSION:
+                browser_session_cls = alt_cls
+        except Exception:
+            pass
+        browser_session: Any = browser_session_cls(cdp_url=session_info.cdp_url)
         try:
             await asyncio.wait_for(browser_session.start(), timeout=30.0)
         except Exception:
             raise RuntimeError("Failed to start browser session (timeout or error)")
         _browser_sessions[instance_id] = browser_session
-
     if file_system is None:
         file_system = FileSystem(base_dir=session_info.user_data_dir)
         _file_systems[instance_id] = file_system
-
     return browser_session, file_system
 
 
@@ -1262,9 +1773,17 @@ def _augment_error(action_name: str, params: dict, error: str) -> str:
     ):
         if params.get("coordinate_x") is None or params.get("coordinate_y") is None:
             hint = "Provide both --x and --y for coordinate clicks."
+    lowered_error = message.lower()
+    if action_name == "click" and "Could not resolve target" in message:
+        hint = 'Run "buse <id> observe" to refresh indices and keep the same tab.'
+    if action_name == "click" and "did not become actionable" in lowered_error:
+        hint = (
+            'Run "buse <id> observe" to refresh indices, then retry or close overlays.'
+        )
+    if action_name == "fill" and "Invalid JSON" in message:
+        hint = 'Use a JSON list, e.g. \'[{"ref":"e1","value":"user"}]\'.'
     if "Could not resolve element index" in error:
         hint = "Run `buse <id> observe` and use an index or pass the actual <select> --id/--class."
-    lowered_error = message.lower()
     if "element index" in lowered_error and (
         "not available" in lowered_error
         or "not found in browser state" in lowered_error
@@ -1388,7 +1907,8 @@ async def execute_tool(
     return_result: bool = False,
     **extra_kwargs,
 ):
-    from browser_use import Controller
+    browser_use_mod = importlib.import_module("browser_use")
+    Controller = getattr(browser_use_mod, "Controller")
 
     params_for_hint = dict(params)
     label = action_label or action_name
@@ -1410,19 +1930,16 @@ async def execute_tool(
                 "session", retryable=False, instance_id=instance_id
             ),
         )
-
     profile["browser_session_cached"] = 1.0 if instance_id in _browser_sessions else 0.0
     profile["file_system_cached"] = 1.0 if instance_id in _file_systems else 0.0
     with profiler.span("get_browser_session_ms"):
         browser_session, file_system = await _get_browser_session(
             instance_id, session_info
         )
-
     try:
         if needs_selector_map:
             with profiler.span("selector_map_ms"):
                 await _ensure_selector_map(browser_session, instance_id)
-
         element_id = params.pop("element_id", None)
         element_class = params.pop("element_class", None)
         if params.get("index") is None and (element_id or element_class):
@@ -1462,7 +1979,6 @@ async def execute_tool(
                     selector = f"#{element_id}"
                 elif element_class:
                     selector = f".{element_class}"
-
                 if selector:
                     text = params.get("text", "")
                     handled, error_msg, success_msg = await _try_dropdown_fallback(
@@ -1482,7 +1998,6 @@ async def execute_tool(
                         if defer_output:
                             raise ResultEmitter.EarlyExit()
                         return
-
             if resolved_index is None:
                 error_msg = "Could not resolve element index"
                 emitter.fail(
@@ -1490,7 +2005,6 @@ async def execute_tool(
                     f"{error_msg} (id={element_id}, class={element_class})",
                 )
             params["index"] = resolved_index
-
         if action_name == "hover":
             hover_index = params.get("index")
             if hover_index is None:
@@ -1507,7 +2021,6 @@ async def execute_tool(
             if defer_output:
                 raise ResultEmitter.EarlyExit()
             return
-
         if action_name == "send_keys":
             focus_index = params.pop("index", None)
             if focus_index is not None:
@@ -1519,7 +2032,6 @@ async def execute_tool(
                 )
                 if focus_error:
                     emitter.fail(action_name, focus_error)
-
         controller = _controllers.get(instance_id)
         profile["controller_cached"] = 1.0 if controller is not None else 0.0
         if controller is None:
@@ -1591,7 +2103,6 @@ async def execute_tool(
         if error:
             if defer_output:
                 raise ResultEmitter.EarlyExit()
-
         if action_name in {"navigate", "go_back", "search"} or label == "refresh":
             _selector_cache.pop(instance_id, None)
     except ResultEmitter.EarlyExit:
@@ -1617,438 +2128,172 @@ async def execute_tool(
         return emitter.result_payload
 
 
+class VisualMode(str, Enum):
+    som = "som"
+    omni = "omni"
+    none = "none"
+
+
+class TextMode(str, Enum):
+    ai = "ai"
+    dom = "dom"
+    none = "none"
+
+
+class ObserveMode(str, Enum):
+    efficient = "efficient"
+    full = "full"
+
+
 @instance_app.command(
-    help="Observe current state.",
-    epilog="Example: buse b1 observe --screenshot",
+    help="Observe current state. Defaults to AI (compact semantic) + SoM context.",
+    epilog="Example: buse b1 observe --mode efficient --human",
 )
 def observe(
     ctx: typer.Context,
-    screenshot: bool = typer.Option(False, "--screenshot", help="Take a screenshot."),
     path: Optional[str] = typer.Option(
         None, "--path", help="Custom path for screenshot."
     ),
-    omniparser: bool = typer.Option(
-        False, "--omniparser", help="Analyze page with OmniParser."
+    max_chars: Optional[int] = typer.Option(
+        None,
+        "--max-chars",
+        help="Max characters for semantic snapshot (0 disables truncation).",
     ),
-    no_dom: bool = typer.Option(
-        False, "--no-dom", help="Skip DOM processing and omit dom_minified."
+    max_labels: Optional[int] = typer.Option(
+        None, "--max-labels", help="Max SoM labels to draw (default: 150)."
+    ),
+    selector: Optional[str] = typer.Option(
+        None, "--selector", help="Scope semantic snapshot to a CSS selector."
+    ),
+    frame: Optional[str] = typer.Option(
+        None, "--frame", help="Scope semantic snapshot to a frame/iframe CSS selector."
+    ),
+    visual: VisualMode = typer.Option(
+        VisualMode.som, "--visual", help="Visual grounding mode."
+    ),
+    text: TextMode = typer.Option(
+        TextMode.ai,
+        "--text",
+        help="Text/Structure extraction mode (ai=compact semantic).",
+    ),
+    mode: ObserveMode = typer.Option(
+        ObserveMode.efficient, "--mode", help="Heuristic compaction mode."
+    ),
+    human: bool = typer.Option(
+        False, "--human", help="Print in a human-friendly format."
+    ),
+    screenshot: Optional[bool] = typer.Option(
+        None,
+        "--screenshot/--no-screenshot",
+        help="(Deprecated) Force screenshot on/off.",
+    ),
+    omniparser: Optional[bool] = typer.Option(
+        None,
+        "--omniparser/--no-omniparser",
+        help="(Deprecated) Use OmniParser visual mode.",
+    ),
+    no_dom: Optional[bool] = typer.Option(
+        None,
+        "--no-dom/--dom",
+        help="(Deprecated) Skip DOM snapshot.",
+    ),
+    som: Optional[bool] = typer.Option(
+        None,
+        "--som/--no-som",
+        help="(Deprecated) Draw SoM labels.",
+    ),
+    diagnostics: Optional[bool] = typer.Option(
+        None,
+        "--diagnostics/--no-diagnostics",
+        help="(Deprecated) Include diagnostics.",
+    ),
+    semantic: Optional[bool] = typer.Option(
+        None,
+        "--semantic/--no-semantic",
+        help="(Deprecated) Include semantic snapshot.",
     ),
 ):
+    instance_id = ctx.obj["instance_id"]
     if omniparser and not os.getenv("BUSE_OMNIPARSER_URL"):
         raise typer.BadParameter(
-            "BUSE_OMNIPARSER_URL environment variable is required when using --omniparser.\n"
+            "BUSE_OMNIPARSER_URL environment variable is required when using --omniparser."
         )
-    quality_override = _parse_image_quality(None)
-    instance_id = ctx.obj["instance_id"]
 
     async def run():
-        endpoint = None
-        if omniparser:
-            endpoint = _normalize_omniparser_endpoint(
-                os.getenv("BUSE_OMNIPARSER_URL", "")
+        try:
+            visual_value = visual.default if hasattr(visual, "default") else visual
+            text_value = text.default if hasattr(text, "default") else text
+            mode_value = mode.default if hasattr(mode, "default") else mode
+            no_dom_value = _resolve_option_default(no_dom, None)
+            som_value = _resolve_option_default(som, None)
+            diagnostics_value = _resolve_option_default(diagnostics, None)
+            semantic_value = _resolve_option_default(semantic, None)
+            max_chars_value = _resolve_option_default(max_chars, None)
+            max_labels_value = _resolve_option_default(max_labels, None)
+            selector_value = _resolve_option_default(selector, None)
+            frame_value = _resolve_option_default(frame, None)
+            human_value = _resolve_option_default(human, False)
+            legacy_flags = any(
+                v is not None
+                for v in [screenshot, omniparser, no_dom, som, diagnostics, semantic]
             )
-
-            if _should_probe_omniparser(endpoint):
-                try:
-                    async with httpx.AsyncClient(timeout=3.0) as client:
-                        resp = await client.get(f"{endpoint}/probe/")
-                        resp.raise_for_status()
-                    _mark_omniparser_probe(endpoint)
-                except httpx.HTTPStatusError as e:
-                    _output_error(
-                        "observe",
-                        {"omniparser": True},
-                        f"OmniParser server at {endpoint} returned {e.response.status_code}",
-                        error_details=_build_error_details(
-                            "omniparser_probe",
-                            retryable=e.response.status_code >= 500,
-                            endpoint=endpoint,
-                            status_code=e.response.status_code,
-                        ),
-                    )
-                    sys.exit(1)
-                except Exception as e:
-                    _output_error(
-                        "observe",
-                        {"omniparser": True},
-                        f"Cannot reach OmniParser at {endpoint}: {e}",
-                        error_details=_build_error_details(
-                            "omniparser_probe",
-                            retryable=True,
-                            endpoint=endpoint,
-                            exception_type=type(e).__name__,
-                        ),
-                    )
-                    sys.exit(1)
-
-        start_session = time.perf_counter()
-        session_info = session_manager.get_session(instance_id)
-        get_session_ms = (time.perf_counter() - start_session) * 1000.0
-        if not session_info:
-            await _stop_cached_browser_session(instance_id)
+            if legacy_flags:
+                do_screenshot = bool(screenshot) if screenshot is not None else False
+                do_omni = bool(omniparser) if omniparser is not None else False
+                do_som = bool(som_value) if som_value is not None else False
+                do_semantic = (
+                    bool(semantic_value) if semantic_value is not None else False
+                )
+                do_no_dom = bool(no_dom_value) if no_dom_value is not None else False
+                do_diagnostics = (
+                    bool(diagnostics_value) if diagnostics_value is not None else False
+                )
+            else:
+                do_screenshot = visual_value != VisualMode.none
+                do_som = visual_value == VisualMode.som
+                do_omni = visual_value == VisualMode.omni
+                do_semantic = text_value == TextMode.ai
+                do_no_dom = text_value != TextMode.dom
+                do_diagnostics = True
+            if do_omni:
+                do_screenshot = True
+            data = await get_observation(
+                instance_id,
+                screenshot=do_screenshot,
+                path=path,
+                omniparser=do_omni,
+                no_dom=do_no_dom,
+                som=do_som,
+                diagnostics=do_diagnostics,
+                semantic=do_semantic,
+                mode=mode_value.value
+                if hasattr(mode_value, "value")
+                else str(mode_value),
+                max_chars=max_chars_value,
+                max_labels=max_labels_value,
+                selector=selector_value,
+                frame=frame_value,
+            )
+            if human_value:
+                _output_human(data)
+            else:
+                output_data(data)
+        except Exception as e:
             _output_error(
                 "observe",
-                {},
-                f"Instance {instance_id} not found.",
+                {
+                    "visual": visual_value,
+                    "text": text_value,
+                    "mode": mode_value,
+                },
+                str(e),
                 error_details=_build_error_details(
-                    "session", retryable=False, instance_id=instance_id
+                    "observe", exception_type=type(e).__name__
                 ),
             )
             sys.exit(1)
-        assert session_info is not None
-        start_browser = time.perf_counter()
-        browser_session, _ = await _get_browser_session(instance_id, session_info)
-        get_browser_session_ms = (time.perf_counter() - start_browser) * 1000.0
 
-        try:
-            profile_extra: dict[str, float] = {}
-            start_state = time.perf_counter()
-            include_screenshot = screenshot
-
-            try:
-                if no_dom:
-                    from browser_use.browser.events import BrowserStateRequestEvent
-
-                    event = browser_session.event_bus.dispatch(
-                        BrowserStateRequestEvent(
-                            include_dom=False, include_screenshot=include_screenshot
-                        )
-                    )
-                    state_summary = await event.event_result(
-                        raise_if_none=True, raise_if_any=True
-                    )
-                else:
-                    state_summary = await browser_session.get_browser_state_summary(
-                        include_screenshot=include_screenshot
-                    )
-            except Exception as e:
-                if "timeout" in str(e).lower() and include_screenshot:
-                    try:
-                        if no_dom:
-                            from browser_use.browser.events import (
-                                BrowserStateRequestEvent,
-                            )
-
-                            event = browser_session.event_bus.dispatch(
-                                BrowserStateRequestEvent(
-                                    include_dom=False,
-                                    include_screenshot=include_screenshot,
-                                )
-                            )
-                            state_summary = await event.event_result(
-                                raise_if_none=True, raise_if_any=True
-                            )
-                        else:
-                            state_summary = (
-                                await browser_session.get_browser_state_summary(
-                                    include_screenshot=include_screenshot
-                                )
-                            )
-                    except Exception as e2:
-                        _output_error(
-                            "observe",
-                            {"screenshot": include_screenshot},
-                            f"Failed to capture browser state (timed out twice): {e2}",
-                            error_details=_build_error_details(
-                                "state_capture",
-                                retryable=True,
-                                include_screenshot=include_screenshot,
-                                exception_type=type(e2).__name__,
-                            ),
-                        )
-                        sys.exit(1)
-                else:
-                    _output_error(
-                        "observe",
-                        {"screenshot": include_screenshot},
-                        f"Failed to capture browser state: {e}",
-                        error_details=_build_error_details(
-                            "state_capture",
-                            retryable=False,
-                            include_screenshot=include_screenshot,
-                            exception_type=type(e).__name__,
-                        ),
-                    )
-                    sys.exit(1)
-
-            state_ms = (time.perf_counter() - start_state) * 1000.0
-            if not no_dom:
-                _selector_cache[instance_id] = time.time()
-            focused_id = browser_session.agent_focus_target_id
-            screenshot_data = state_summary.screenshot
-            cdp_screenshot_error = None
-            needs_screenshot = screenshot or omniparser
-            omniparser_shot_dir = None
-            omniparser_image_data = None
-            som_path = None
-
-            try:
-                cdp_session = await browser_session.get_or_create_cdp_session()
-                viewport_res = await asyncio.wait_for(
-                    cdp_session.cdp_client.send.Runtime.evaluate(
-                        params={
-                            "expression": "({width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio})",
-                            "returnByValue": True,
-                        },
-                        session_id=cdp_session.session_id,
-                    ),
-                    timeout=5.0,
-                )
-                viewport_data = viewport_res.get("result", {}).get("value")
-                if needs_screenshot and not screenshot_data:
-                    try:
-                        capture_start = time.perf_counter() if state.profile else None
-                        capture = await asyncio.wait_for(
-                            cdp_session.cdp_client.send.Page.captureScreenshot(
-                                params={"format": "png"},
-                                session_id=cdp_session.session_id,
-                            ),
-                            timeout=15.0,
-                        )
-                        if capture_start is not None:
-                            profile_extra["cdp_screenshot_ms"] = (
-                                time.perf_counter() - capture_start
-                            ) * 1000.0
-                        capture_data = (
-                            capture.get("data") if isinstance(capture, dict) else None
-                        )
-                        if isinstance(capture_data, str) and capture_data:
-                            screenshot_data = capture_data
-                        else:
-                            cdp_screenshot_error = "CDP capture returned no data"
-                    except Exception as capture_exc:
-                        cdp_screenshot_error = str(capture_exc) or "CDP capture failed"
-            except Exception as e:
-                _output_error(
-                    "observe",
-                    {},
-                    f"Failed to access browser via CDP: {e}",
-                    error_details=_build_error_details(
-                        "cdp_access",
-                        retryable=False,
-                        exception_type=type(e).__name__,
-                    ),
-                )
-                sys.exit(1)
-
-            viewport = None
-            if viewport_data:
-                from .models import ViewportInfo
-
-                viewport = ViewportInfo(**viewport_data)
-
-            omniparser_quality = (
-                quality_override if quality_override is not None else 95
-            )
-            som_quality = quality_override if quality_override is not None else 75
-
-            visual_analysis = None
-            if omniparser:
-                omniparser_start = time.perf_counter() if state.profile else None
-                if not screenshot_data:
-                    message = "Failed to capture screenshot required for OmniParser."
-                    if cdp_screenshot_error:
-                        message = (
-                            f"{message} CDP screenshot failed: {cdp_screenshot_error}"
-                        )
-                    _output_error(
-                        "observe",
-                        {"omniparser": True},
-                        message,
-                        error_details=_build_error_details(
-                            "omniparser_input",
-                            retryable=True,
-                            reason="missing_screenshot",
-                            cdp_screenshot_error=cdp_screenshot_error,
-                        ),
-                    )
-                    sys.exit(1)
-                if not viewport:
-                    _output_error(
-                        "observe",
-                        {"omniparser": True},
-                        "Failed to capture viewport info required for OmniParser.",
-                        error_details=_build_error_details(
-                            "omniparser_input",
-                            retryable=True,
-                            reason="missing_viewport",
-                        ),
-                    )
-                    sys.exit(1)
-
-                omniparser_shot_dir = Path(session_info.user_data_dir) / "screenshots"
-                if path:
-                    p = Path(path)
-                    if p.is_dir() or not p.suffix:
-                        omniparser_shot_dir = p
-                    else:
-                        omniparser_shot_dir = p.parent
-                if omniparser_shot_dir:
-                    omniparser_shot_dir.mkdir(exist_ok=True, parents=True)
-
-                from .vision import VisionClient
-                from .utils import downscale_image
-
-                client = VisionClient(server_url=endpoint)
-
-                try:
-                    prepare_start = time.perf_counter() if state.profile else None
-                    omniparser_image_data = downscale_image(
-                        screenshot_data, quality=omniparser_quality
-                    )
-                    if prepare_start is not None:
-                        profile_extra["omniparser_prepare_ms"] = (
-                            time.perf_counter() - prepare_start
-                        ) * 1000.0
-                    request_start = time.perf_counter() if state.profile else None
-                    assert viewport is not None
-                    analysis, som_image_base64 = await client.analyze(
-                        omniparser_image_data, viewport
-                    )
-                    if request_start is not None:
-                        profile_extra["omniparser_request_ms"] = (
-                            time.perf_counter() - request_start
-                        ) * 1000.0
-
-                    if not analysis.elements:
-                        _output_error(
-                            "observe",
-                            {"omniparser": True},
-                            "OmniParser returned no elements for the current page.",
-                            error_details=_build_error_details(
-                                "omniparser_analysis",
-                                retryable=False,
-                                elements=0,
-                            ),
-                        )
-                        sys.exit(1)
-
-                    if som_image_base64 and omniparser_shot_dir:
-                        som_start = time.perf_counter() if state.profile else None
-                        som_image_base64 = downscale_image(
-                            som_image_base64, quality=som_quality
-                        )
-
-                        som_path = str(omniparser_shot_dir / "image_som.jpg")
-                        client.save_som_image(som_image_base64, som_path)
-                        analysis.som_image_path = som_path
-                        if som_start is not None:
-                            profile_extra["omniparser_som_ms"] = (
-                                time.perf_counter() - som_start
-                            ) * 1000.0
-
-                    visual_analysis = analysis
-                    if omniparser_start is not None:
-                        profile_extra["omniparser_total_ms"] = (
-                            time.perf_counter() - omniparser_start
-                        ) * 1000.0
-                except Exception as ve:
-                    _output_error(
-                        "observe",
-                        {"omniparser": True},
-                        f"OmniParser analysis failed: {ve}",
-                        error_details=_build_error_details(
-                            "omniparser_analysis",
-                            exception_type=type(ve).__name__,
-                        ),
-                    )
-                    sys.exit(1)
-
-            start_tabs = time.perf_counter()
-            tabs = [
-                TabInfo(id=t.target_id, title=t.title, url=t.url)
-                for t in await browser_session.get_tabs()
-            ]
-            tabs_ms = (time.perf_counter() - start_tabs) * 1000.0
-
-            screenshot_path = None
-            screenshot_ms = 0.0
-
-            if (screenshot or omniparser) and screenshot_data:
-                start_shot = time.perf_counter()
-
-                if omniparser:
-                    if omniparser_image_data is None:
-                        _output_error(
-                            "observe",
-                            {"omniparser": True},
-                            "Failed to prepare OmniParser screenshot.",
-                            error_details=_build_error_details(
-                                "omniparser_prepare",
-                                retryable=False,
-                            ),
-                        )
-                        sys.exit(1)
-                    shot_dir = omniparser_shot_dir or (
-                        Path(session_info.user_data_dir) / "screenshots"
-                    )
-                    shot_dir.mkdir(exist_ok=True, parents=True)
-                    image_path = str(shot_dir / "image.jpg")
-                    screenshot_path = som_path or image_path
-                    shot_path = image_path
-                    shot_data = omniparser_image_data
-                else:
-                    shot_data = screenshot_data
-                    ext = "png"
-                    if not path:
-                        shot_dir = Path(session_info.user_data_dir) / "screenshots"
-                        shot_dir.mkdir(exist_ok=True)
-                        screenshot_path = str(shot_dir / f"last_state.{ext}")
-                    else:
-                        p = Path(path)
-                        if p.is_dir():
-                            p.mkdir(exist_ok=True, parents=True)
-                            screenshot_path = str(p / f"last_state.{ext}")
-                        else:
-                            if p.parent:
-                                p.parent.mkdir(exist_ok=True, parents=True)
-                            screenshot_path = str(p)
-                    shot_path = screenshot_path
-
-                if shot_path and shot_data:
-                    with open(shot_path, "wb") as f:
-                        f.write(base64.b64decode(shot_data))
-                    screenshot_ms = (time.perf_counter() - start_shot) * 1000.0
-
-            obs = Observation(
-                session_id=instance_id,
-                url=state_summary.url,
-                title=state_summary.title,
-                visual_analysis=visual_analysis,
-                tabs=tabs,
-                viewport=viewport,
-                screenshot_path=screenshot_path,
-                dom_minified=(
-                    ""
-                    if no_dom
-                    else state_summary.dom_state.llm_representation()
-                    if state_summary.dom_state
-                    else ""
-                ),
-            )
-
-            data = obs.model_dump()
-            data["focused_tab_id"] = focused_id
-            if state.profile:
-                data["profile"] = {
-                    "get_session_ms": get_session_ms,
-                    "get_browser_session_ms": get_browser_session_ms,
-                    "get_state_ms": state_ms,
-                    "get_tabs_ms": tabs_ms,
-                    "write_screenshot_ms": screenshot_ms,
-                    **profile_extra,
-                }
-            output_data(data)
-
-        finally:
-            if not _should_keep_session():
-                await _stop_cached_browser_session(instance_id)
-
-    @handle_errors(action="observe")
-    async def wrapper():
-        await run()
-
-    asyncio.run(wrapper())
+    asyncio.run(run())
 
 
 @instance_app.command(
@@ -2088,63 +2333,225 @@ def search(ctx: typer.Context, query: str, engine: str = "google"):
 
 
 @instance_app.command(
-    help="Click by index OR coordinates.",
-    epilog="Examples: buse b1 click 12 | buse b1 click --x 200 --y 300 | buse b1 click --id submit",
+    help="Click by index, selector, id, or coordinates.",
+    epilog="Examples: buse b1 click 12 | buse b1 click e3 | buse b1 click --selector '#submit' | buse b1 click --x 200 --y 300 --ctrl",
 )
 def click(
     ctx: typer.Context,
-    index: Optional[int] = typer.Argument(None),
-    x: Optional[int] = typer.Option(None, "--x"),
-    y: Optional[int] = typer.Option(None, "--y"),
-    element_id: Optional[str] = typer.Option(None, "--id"),
-    element_class: Optional[str] = typer.Option(None, "--class"),
+    index: Optional[str] = typer.Argument(
+        None, help="Element index or ref (eN) from the observe command."
+    ),
+    selector: Optional[str] = typer.Option(
+        None, "--selector", help="CSS selector to click."
+    ),
+    x: Optional[int] = typer.Option(None, "--x", help="X coordinate for raw click."),
+    y: Optional[int] = typer.Option(None, "--y", help="Y coordinate for raw click."),
+    element_id: Optional[str] = typer.Option(
+        None, "--id", help="The HTML 'id' attribute of the element."
+    ),
+    element_class: Optional[str] = typer.Option(
+        None, "--class", help="The HTML 'class' attribute of the element."
+    ),
+    right: bool = typer.Option(False, "--right", help="Perform a right-click."),
+    middle: bool = typer.Option(False, "--middle", help="Perform a middle-click."),
+    double: bool = typer.Option(False, "--double", help="Perform a double-click."),
+    ctrl: bool = typer.Option(False, "--ctrl", help="Hold Control/Cmd key."),
+    shift: bool = typer.Option(False, "--shift", help="Hold Shift key."),
+    alt: bool = typer.Option(False, "--alt", help="Hold Alt key."),
+    meta: bool = typer.Option(False, "--meta", help="Hold Meta/Command key."),
+    force: bool = typer.Option(False, "--force", help="Bypass actionability checks."),
+    debug: bool = typer.Option(
+        False, "--debug", help="Include actionability debug info on failures."
+    ),
 ):
-    if (
-        index is None
-        and x is None
-        and y is None
-        and element_id is None
-        and element_class is None
-    ):
+    instance_id = ctx.obj["instance_id"]
+    selector = _resolve_option_default(selector, None)
+    x = _resolve_option_default(x, None)
+    y = _resolve_option_default(y, None)
+    element_id = _resolve_option_default(element_id, None)
+    element_class = _resolve_option_default(element_class, None)
+    right = _resolve_option_default(right, False)
+    middle = _resolve_option_default(middle, False)
+    double = _resolve_option_default(double, False)
+    ctrl = _resolve_option_default(ctrl, False)
+    shift = _resolve_option_default(shift, False)
+    alt = _resolve_option_default(alt, False)
+    meta = _resolve_option_default(meta, False)
+    force = _resolve_option_default(force, False)
+    debug = _resolve_option_default(debug, False)
+    if index is not None and not str(index).strip():
+        index = None
+    if all(v is None for v in [index, selector, x, y, element_id, element_class]):
         raise typer.BadParameter(
-            "Provide an index, --id/--class, or --x/--y. Example: buse b1 click 12 or buse b1 click --x 200 --y 300."
+            "Provide an index, selector, --id/--class, or --x/--y."
         )
     if (x is None) != (y is None):
         raise typer.BadParameter("Provide both --x and --y for coordinate clicks.")
-    params = {}
-    if index is not None:
-        params["index"] = index
-    if x is not None:
-        params["coordinate_x"] = x
-    if y is not None:
-        params["coordinate_y"] = y
-    if element_id is not None:
-        params["element_id"] = element_id
-    if element_class is not None:
-        params["element_class"] = element_class
 
-    asyncio.run(
-        execute_tool(
-            ctx.obj["instance_id"],
-            "click",
-            params,
-            needs_selector_map=(index is not None),
-        )
-    )
+    async def run():
+        try:
+            session_info = session_manager.get_session(instance_id)
+            if not session_info:
+                raise ValueError(f"Instance {instance_id} not found.")
+            browser_session, _ = await _get_browser_session(instance_id, session_info)
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            button = "right" if right else "middle" if middle else "left"
+            click_count = 2 if double else 1
+            modifiers = []
+            if ctrl:
+                modifiers.append("ctrl")
+            if shift:
+                modifiers.append("shift")
+            if alt:
+                modifiers.append("alt")
+            if meta:
+                modifiers.append("meta")
+            if x is not None and y is not None:
+                mask = 0
+                if alt:
+                    mask |= 1
+                if ctrl:
+                    mask |= 2
+                if meta:
+                    mask |= 4
+                if shift:
+                    mask |= 8
+                params = {
+                    "x": x,
+                    "y": y,
+                    "button": button,
+                    "clickCount": click_count,
+                    "modifiers": mask,
+                }
+                try:
+                    await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+                        params={**params, "type": "mousePressed"},
+                        session_id=cdp_session.session_id,
+                    )
+                    await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+                        params={**params, "type": "mouseReleased"},
+                        session_id=cdp_session.session_id,
+                    )
+                    output_data({"success": True, "action": "click", "x": x, "y": y})
+                    return
+                except AttributeError:
+                    await execute_tool(
+                        instance_id,
+                        "click",
+                        {
+                            "coordinate_x": x,
+                            "coordinate_y": y,
+                            "element_id": element_id,
+                            "element_class": element_class,
+                        },
+                        action_label="click",
+                    )
+                    return
+            target: Optional[object] = None
+            if index is not None:
+                if str(index).isdigit():
+                    target = int(str(index))
+                else:
+                    target = str(index)
+            else:
+                target = selector
+            if target is None:
+                if element_id:
+                    target = f"#{element_id}"
+                elif element_class:
+                    target = f".{element_class}"
+            if target is None:
+                raise ValueError("Provide a click target.")
+            try:
+                await _ensure_selector_map(browser_session, instance_id)
+                selector_map = await browser_session.get_selector_map()
+                target_id = browser_session.agent_focus_target_id
+
+                async def refresh_selector_map():
+                    await _ensure_selector_map(browser_session, instance_id, force=True)
+                    return await browser_session.get_selector_map()
+
+                result = await interaction.click_with_retry(
+                    cdp_session,
+                    target,
+                    selector_map=selector_map,
+                    refresh_selector_map=refresh_selector_map,
+                    modifiers=modifiers,
+                    button=button,
+                    click_count=click_count,
+                    force=force,
+                    timeout_ms=5000,
+                    debug=debug,
+                    target_id=target_id,
+                    instance_id=instance_id,
+                    persist_path=str(_semantic_refs_path(session_info)),
+                )
+                output_data(
+                    {
+                        "success": True,
+                        "action": "click",
+                        "target": target,
+                        "coords": result,
+                    }
+                )
+            except AttributeError:
+                params = {
+                    "selector": selector,
+                    "element_id": element_id,
+                    "element_class": element_class,
+                }
+                if index is not None:
+                    params["index"] = (
+                        int(str(index)) if str(index).isdigit() else str(index)
+                    )
+                await execute_tool(
+                    instance_id,
+                    "click",
+                    params,
+                    needs_selector_map=(index is not None),
+                    action_label="click",
+                )
+        finally:
+            if not _should_keep_session():
+                await _stop_cached_browser_session(instance_id)
+
+    @handle_errors(action="click")
+    async def wrapper():
+        await run()
+
+    asyncio.run(wrapper())
 
 
 @instance_app.command(
     help="Input text into form fields.",
-    epilog='Examples: buse b1 input 12 "hello" | buse b1 input --id email --text "a@b.com"',
+    epilog='Examples: buse b1 input 12 "hello" | buse b1 input e3 --slowly | buse b1 input --id email --text "a@b.com" --submit',
 )
 def input(
     ctx: typer.Context,
-    index: Optional[int] = typer.Argument(None),
-    text: Optional[str] = typer.Argument(None),
-    text_opt: Optional[str] = typer.Option(None, "--text"),
-    element_id: Optional[str] = typer.Option(None, "--id"),
-    element_class: Optional[str] = typer.Option(None, "--class"),
+    index: Optional[str] = typer.Argument(
+        None, help="Element index or ref (eN) from the observe command."
+    ),
+    text: Optional[str] = typer.Argument(None, help="Text to input."),
+    text_opt: Optional[str] = typer.Option(
+        None, "--text", help="Text to input (alternative to positional)."
+    ),
+    element_id: Optional[str] = typer.Option(
+        None, "--id", help="The HTML 'id' attribute of the element."
+    ),
+    element_class: Optional[str] = typer.Option(
+        None, "--class", help="The HTML 'class' attribute of the element."
+    ),
+    slowly: bool = typer.Option(False, "--slowly", help="Type slowly (key by key)."),
+    submit: bool = typer.Option(False, "--submit", help="Press Enter after typing."),
+    append: bool = typer.Option(
+        False, "--append", help="Append to existing text instead of replacing."
+    ),
 ):
+    element_id = _resolve_option_default(element_id, None)
+    element_class = _resolve_option_default(element_class, None)
+    slowly = _resolve_option_default(slowly, False)
+    submit = _resolve_option_default(submit, False)
+    append = _resolve_option_default(append, False)
     resolved_text = text if text is not None else text_opt
     if resolved_text is None:
         raise typer.BadParameter(
@@ -2154,9 +2561,62 @@ def input(
         raise typer.BadParameter(
             'Provide an index or --id/--class. Example: buse b1 input 12 "hello".'
         )
+    if index is not None and not str(index).strip():
+        index = None
+    if append or slowly or submit or (index is not None and not str(index).isdigit()):
+        instance_id = ctx.obj["instance_id"]
+
+        def _parse_target(value: Optional[str]) -> Optional[Union[int, str]]:
+            if value is None:
+                return None
+            return int(value) if str(value).isdigit() else str(value)
+
+        async def run():
+            try:
+                session_info = session_manager.get_session(instance_id)
+                if not session_info:
+                    raise ValueError(f"Instance {instance_id} not found.")
+                browser_session, _ = await _get_browser_session(
+                    instance_id, session_info
+                )
+                cdp_session = await browser_session.get_or_create_cdp_session()
+                await _ensure_selector_map(browser_session, instance_id)
+                selector_map = await browser_session.get_selector_map()
+                target_id = browser_session.agent_focus_target_id
+                target = _parse_target(index)
+                if target is None:
+                    if element_id:
+                        target = f"#{element_id}"
+                    elif element_class:
+                        target = f".{element_class}"
+                if target is None:
+                    raise ValueError("Provide an index/ref or --id/--class.")
+                result = await interaction.type_text(
+                    cdp_session,
+                    target,
+                    resolved_text,
+                    selector_map=selector_map,
+                    slowly=slowly,
+                    submit=submit,
+                    append=append,
+                    target_id=target_id,
+                    instance_id=instance_id,
+                    persist_path=str(_semantic_refs_path(session_info)),
+                )
+                output_data({"success": True, "action": "input", "result": result})
+            finally:
+                if not _should_keep_session():
+                    await _stop_cached_browser_session(instance_id)
+
+        @handle_errors(action="input")
+        async def wrapper():
+            await run()
+
+        asyncio.run(wrapper())
+        return
     params = {"text": resolved_text}
     if index is not None:
-        params["index"] = index
+        params["index"] = int(str(index))
     if element_id is not None:
         params["element_id"] = element_id
     if element_class is not None:
@@ -2169,6 +2629,101 @@ def input(
             needs_selector_map=(index is not None),
         )
     )
+
+
+@instance_app.command(
+    help="Fill multiple fields in a single command.",
+    epilog='Example: buse b1 fill \'[{"ref": "e1", "value": "user"}, {"ref": 2, "value": "pass", "type": "text"}]\'',
+)
+def fill(
+    ctx: typer.Context,
+    data: str = typer.Argument(..., help="JSON list of field updates."),
+):
+    instance_id = ctx.obj["instance_id"]
+    try:
+        fields = json.loads(data)
+    except Exception as exc:
+        raise typer.BadParameter("Invalid JSON for fill data.") from exc
+    if not isinstance(fields, list):
+        raise typer.BadParameter("Fill data must be a JSON list.")
+
+    async def run():
+        try:
+            session_info = session_manager.get_session(instance_id)
+            if not session_info:
+                raise ValueError(f"Instance {instance_id} not found.")
+            browser_session, _ = await _get_browser_session(instance_id, session_info)
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            await _ensure_selector_map(browser_session, instance_id)
+            selector_map = await browser_session.get_selector_map()
+            target_id = browser_session.agent_focus_target_id
+            result = await interaction.fill_form_atomic(
+                cdp_session,
+                fields,
+                selector_map=selector_map,
+                target_id=target_id,
+                instance_id=instance_id,
+                persist_path=str(_semantic_refs_path(session_info)),
+            )
+            output_data(result)
+        finally:
+            if not _should_keep_session():
+                await _stop_cached_browser_session(instance_id)
+
+    @handle_errors(action="fill")
+    async def wrapper():
+        await run()
+
+    asyncio.run(wrapper())
+
+
+@instance_app.command(
+    help="Drag and drop between two elements.",
+    epilog="Examples: buse b1 drag 12 13 | buse b1 drag e1 e2",
+)
+def drag(
+    ctx: typer.Context,
+    start: str = typer.Argument(..., help="Start element index or ref (eN)."),
+    end: str = typer.Argument(..., help="End element index or ref (eN)."),
+    html5: bool = typer.Option(
+        True, "--html5/--no-html5", help="Dispatch DragEvent/DataTransfer fallback."
+    ),
+):
+    instance_id = ctx.obj["instance_id"]
+
+    def _parse_target(value: str) -> Union[int, str]:
+        return int(value) if value.isdigit() else value
+
+    async def run():
+        try:
+            session_info = session_manager.get_session(instance_id)
+            if not session_info:
+                raise ValueError(f"Instance {instance_id} not found.")
+            browser_session, _ = await _get_browser_session(instance_id, session_info)
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            await _ensure_selector_map(browser_session, instance_id)
+            selector_map = await browser_session.get_selector_map()
+            target_id = browser_session.agent_focus_target_id
+            result = await interaction.drag_and_drop(
+                cdp_session,
+                _parse_target(start),
+                _parse_target(end),
+                selector_map=selector_map,
+                html5=html5,
+                target_id=target_id,
+                instance_id=instance_id,
+                persist_path=str(_semantic_refs_path(session_info)),
+            )
+            output_data({"success": True, "action": "drag", "result": result})
+        finally:
+            if not _should_keep_session():
+                await _stop_cached_browser_session(instance_id)
+
+    @handle_errors(action="drag")
+    async def wrapper():
+        await run()
+
+    asyncio.run(wrapper())
 
 
 @instance_app.command(
@@ -2187,7 +2742,6 @@ def upload_file(
         raise typer.BadParameter(f"File not found: {path}")
     if not os.path.isfile(full_path):
         raise typer.BadParameter(f"Path is not a file: {path}")
-
     asyncio.run(
         execute_tool(
             ctx.obj["instance_id"],
@@ -2272,9 +2826,15 @@ def find_text(
 )
 def dropdown_options(
     ctx: typer.Context,
-    index: Optional[int] = typer.Argument(None),
-    element_id: Optional[str] = typer.Option(None, "--id"),
-    element_class: Optional[str] = typer.Option(None, "--class"),
+    index: Optional[int] = typer.Argument(
+        None, help="Element index from the observe command."
+    ),
+    element_id: Optional[str] = typer.Option(
+        None, "--id", help="The HTML 'id' attribute of the element."
+    ),
+    element_class: Optional[str] = typer.Option(
+        None, "--class", help="The HTML 'class' attribute of the element."
+    ),
 ):
     if index is None and element_id is None and element_class is None:
         raise typer.BadParameter(
@@ -2303,11 +2863,21 @@ def dropdown_options(
 )
 def select_dropdown(
     ctx: typer.Context,
-    index: Optional[int] = typer.Argument(None),
-    text: Optional[str] = typer.Argument(None),
-    text_opt: Optional[str] = typer.Option(None, "--text"),
-    element_id: Optional[str] = typer.Option(None, "--id"),
-    element_class: Optional[str] = typer.Option(None, "--class"),
+    index: Optional[int] = typer.Argument(
+        None, help="Element index from the observe command."
+    ),
+    text: Optional[str] = typer.Argument(
+        None, help="Visible text of the option to select."
+    ),
+    text_opt: Optional[str] = typer.Option(
+        None, "--text", help="Visible text of the option (alternative to positional)."
+    ),
+    element_id: Optional[str] = typer.Option(
+        None, "--id", help="The HTML 'id' attribute of the element."
+    ),
+    element_class: Optional[str] = typer.Option(
+        None, "--class", help="The HTML 'class' attribute of the element."
+    ),
 ):
     resolved_text = text if text is not None else text_opt
     if resolved_text is None:
@@ -2368,7 +2938,13 @@ def scroll(
             )
         else:
             direction = 1 if down else -1
-            code = f"window.scrollBy({{top: window.innerHeight * {pages} * {direction}, behavior: 'smooth'}})"
+            code = (
+                "window.scrollBy({top: window.innerHeight * "
+                + str(pages)
+                + " * "
+                + str(direction)
+                + ", behavior: 'smooth'})"
+            )
             await execute_tool(
                 instance_id, "evaluate", {"code": code}, action_label="scroll"
             )
@@ -2382,9 +2958,15 @@ def scroll(
 )
 def hover(
     ctx: typer.Context,
-    index: Optional[int] = typer.Argument(None),
-    element_id: Optional[str] = typer.Option(None, "--id"),
-    element_class: Optional[str] = typer.Option(None, "--class"),
+    index: Optional[int] = typer.Argument(
+        None, help="Element index from the observe command."
+    ),
+    element_id: Optional[str] = typer.Option(
+        None, "--id", help="The HTML 'id' attribute of the element."
+    ),
+    element_class: Optional[str] = typer.Option(
+        None, "--class", help="The HTML 'class' attribute of the element."
+    ),
 ):
     if index is None and element_id is None and element_class is None:
         raise typer.BadParameter("Provide index, --id, or --class for hover.")
@@ -2422,20 +3004,70 @@ def refresh(ctx: typer.Context):
 
 
 @instance_app.command(
-    help="Wait for specified seconds.",
-    epilog="Example: buse b1 wait 2",
+    help="Wait for specified seconds or a condition.",
+    epilog='Examples: buse b1 wait 2 | buse b1 wait --text "Done" --timeout 10',
 )
-def wait(ctx: typer.Context, seconds: float):
-    if seconds < 0:
+def wait(
+    ctx: typer.Context,
+    seconds: Optional[float] = typer.Argument(
+        None, help="Seconds to wait (optional if using conditions)."
+    ),
+    text: Optional[str] = typer.Option(None, "--text", help="Wait until text appears."),
+    selector: Optional[str] = typer.Option(
+        None, "--selector", help="Wait until selector appears."
+    ),
+    network_idle: Optional[int] = typer.Option(
+        None, "--network-idle", help="Wait until network is idle for N ms."
+    ),
+    timeout: int = typer.Option(
+        10, "--timeout", help="Timeout in seconds for condition waits."
+    ),
+):
+    instance_id = ctx.obj["instance_id"]
+    text = _resolve_option_default(text, None)
+    selector = _resolve_option_default(selector, None)
+    network_idle = _resolve_option_default(network_idle, None)
+    timeout = _resolve_option_default(timeout, 10)
+    has_condition = any(v is not None for v in [text, selector, network_idle])
+    if not has_condition and seconds is None:
+        raise typer.BadParameter("Provide seconds or a wait condition.")
+    if seconds is not None and seconds < 0:
         raise typer.BadParameter("Use a non-negative number of seconds.")
-    asyncio.run(
-        execute_tool(
-            ctx.obj["instance_id"],
-            "wait",
-            {"seconds": seconds},
-            action_label="wait",
+    if not has_condition:
+        asyncio.run(
+            execute_tool(
+                instance_id,
+                "wait",
+                {"seconds": seconds},
+                action_label="wait",
+            )
         )
-    )
+        return
+
+    async def run():
+        try:
+            session_info = session_manager.get_session(instance_id)
+            if not session_info:
+                raise ValueError(f"Instance {instance_id} not found.")
+            browser_session, _ = await _get_browser_session(instance_id, session_info)
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            result = await interaction.wait_for_condition(
+                cdp_session,
+                text=text,
+                selector=selector,
+                network_idle_ms=network_idle,
+                timeout_ms=int(timeout * 1000),
+            )
+            output_data({"success": True, "action": "wait", "result": result})
+        finally:
+            if not _should_keep_session():
+                await _stop_cached_browser_session(instance_id)
+
+    @handle_errors(action="wait")
+    async def wrapper():
+        await run()
+
+    asyncio.run(wrapper())
 
 
 @instance_app.command(
@@ -2496,7 +3128,7 @@ def save_state(ctx: typer.Context, path: str):
             )
             sys.exit(1)
         assert session_info is not None
-        browser_session = BrowserSession(cdp_url=session_info.cdp_url)
+        browser_session: Any = BrowserSession(cdp_url=session_info.cdp_url)
         await browser_session.start()
         try:
             state = await browser_session.export_storage_state(output_path=path)
@@ -2572,11 +3204,9 @@ def stop(ctx: typer.Context):
 def _run(args: list[str]) -> None:
     state.format = OutputFormat.json
     state.profile = False
-
     if args and args[0] == "list":
         output_data(session_manager.list_sessions())
         return
-
     if args and args[0] == "mcp-server":
         logging.basicConfig(
             level=logging.INFO,
@@ -2587,14 +3217,12 @@ def _run(args: list[str]) -> None:
         logging.disable(logging.NOTSET)
         server_app(args=args[1:], standalone_mode=False)
         return
-
     if "--profile" in args:
         state.profile = True
         args = [arg for arg in args if arg != "--profile"]
     if "-p" in args:
         state.profile = True
         args = [arg for arg in args if arg != "-p"]
-
     while "--format" in args:
         idx = args.index("--format")
         if idx + 1 < len(args):
@@ -2607,7 +3235,6 @@ def _run(args: list[str]) -> None:
             state.format = OutputFormat(args[idx + 1])
             args.pop(idx)
             args.pop(idx)
-
     if len(args) >= 3 and args[1] == "wait":
         candidate = args[2]
         if candidate.startswith("-") and candidate not in {"-", "--"}:
@@ -2617,7 +3244,6 @@ def _run(args: list[str]) -> None:
                 pass
             else:
                 args.insert(2, "--")
-
     if not args or args[0] in ["--help", "-h"]:
         print(
             "buse: Stateless CLI for browser-use\n\n"
@@ -2633,6 +3259,8 @@ def _run(args: list[str]) -> None:
             "  search             Search the web (duckduckgo, google, bing)\n"
             "  click              Click by index OR coordinates\n"
             "  input              Input text into form fields\n"
+            "  fill               Fill multiple form fields\n"
+            "  drag               Drag and drop between elements\n"
             "  upload-file        Upload a file to an element\n"
             "  send-keys          Send keys to the browser\n"
             "  find-text          Scroll to text on the page\n"
@@ -2652,7 +3280,6 @@ def _run(args: list[str]) -> None:
             "Tip: run `buse <id> --help` to see per-command options."
         )
         return
-
     instance_id = args[0]
     if len(args) == 1:
         existing = session_manager.get_session(instance_id)
@@ -2666,7 +3293,6 @@ def _run(args: list[str]) -> None:
                 {"message": f"Initialized {instance_id}", "already_running": False}
             )
         return
-
     try:
         instance_app(
             args=args[1:], obj={"instance_id": instance_id}, standalone_mode=False

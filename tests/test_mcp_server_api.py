@@ -1,5 +1,4 @@
 import pytest
-
 import buse.mcp_server as mcp_server
 from buse.session import SessionInfo
 from unittest.mock import MagicMock
@@ -72,20 +71,18 @@ def test_serialize_and_load_session():
         user_data_dir="/tmp/buse/b1",
     )
     manager = FakeSessionManager({"b1": session})
-    server = mcp_server.BuseMCPServer(manager)  # type: ignore
-
+    server = mcp_server.BuseMCPServer(manager)  # type: ignore[arg-type]
     serialized = server._serialize_session(session)
     assert serialized["instance_id"] == "b1"
     assert serialized["cdp_url"] == "http://localhost:9222"
     assert serialized["user_data_dir"] == "/tmp/buse/b1"
-
     loaded = server._load_session("b1")
     assert loaded is session
 
 
 def test_load_missing_session_raises():
     manager = FakeSessionManager({})
-    server = mcp_server.BuseMCPServer(manager)  # type: ignore
+    server = mcp_server.BuseMCPServer(manager)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Instance b2 not found"):
         server._load_session("b2")
 
@@ -99,7 +96,7 @@ async def test_mcp_tool_wiring_navigate():
         calls.append((instance_id, action_name, kwargs))
         return {"ok": True}
 
-    server = mcp_server.BuseMCPServer(manager, tool_handler=handler)  # type: ignore
+    server = mcp_server.BuseMCPServer(manager, tool_handler=handler)  # type: ignore[arg-type]
     await getattr(server.mcp, "tools")["navigate"](
         "b1", "https://example.com", new_tab=True
     )
@@ -117,7 +114,7 @@ async def test_mcp_tool_wiring_refresh():
         calls.append((instance_id, action_name, kwargs))
         return {"ok": True}
 
-    server = mcp_server.BuseMCPServer(manager, tool_handler=handler)  # type: ignore
+    server = mcp_server.BuseMCPServer(manager, tool_handler=handler)  # type: ignore[arg-type]
     await getattr(server.mcp, "tools")["refresh"]("b1")
     assert calls == [
         (
@@ -137,7 +134,7 @@ async def test_mcp_click_coerces_empty_element_fields():
         calls.append((instance_id, action_name, kwargs))
         return {"ok": True}
 
-    server = mcp_server.BuseMCPServer(manager, tool_handler=handler)  # type: ignore
+    server = mcp_server.BuseMCPServer(manager, tool_handler=handler)  # type: ignore[arg-type]
     await getattr(server.mcp, "tools")["click"](
         "b1",
         x=15,
@@ -167,7 +164,7 @@ async def test_mcp_click_requires_coordinate_pair():
     async def handler(instance_id: str, action_name: str, **kwargs):
         return {"ok": True}
 
-    server = mcp_server.BuseMCPServer(manager, tool_handler=handler)  # type: ignore
+    server = mcp_server.BuseMCPServer(manager, tool_handler=handler)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Provide both x and y"):
         await getattr(server.mcp, "tools")["click"]("b1", x=15)
 
@@ -181,7 +178,7 @@ async def test_mcp_observe_wiring_omniparser():
         calls.append((instance_id, kwargs))
         return {"ok": True}
 
-    server = mcp_server.BuseMCPServer(manager, observation_handler=observer)  # type: ignore
+    server = mcp_server.BuseMCPServer(manager, observation_handler=observer)  # type: ignore[arg-type]
     await getattr(server.mcp, "tools")["observe"](
         "b1", omniparser=True, screenshot=True, no_dom=True
     )
@@ -197,7 +194,6 @@ def test_access_guard_helpers():
     assert mcp_server._is_loopback_address("127.0.0.1")
     assert mcp_server._is_loopback_address("::1")
     assert not mcp_server._is_loopback_address("8.8.8.8")
-
     headers = [(b"authorization", b"Bearer token")]
     assert mcp_server._extract_auth_token(headers) == "token"
     headers = [(b"x-buse-token", b"token")]
@@ -209,16 +205,12 @@ def test_mcp_server_cli_command(monkeypatch):
     mock_server_instance = MagicMock()
     mock_server_cls.return_value = mock_server_instance
     monkeypatch.setattr(main, "BuseMCPServer", mock_server_cls)
-
     mock_session_manager = MagicMock()
     monkeypatch.setattr(main, "session_manager", mock_session_manager)
-
     code, out = main.run_cli(["mcp-server", "--port", "9000", "--name", "test-server"])
-
     mock_server_cls.assert_called_once()
     _, kwargs = mock_server_cls.call_args
     assert kwargs["server_name"] == "test-server"
-
     mock_server_instance.run.assert_called_once()
     _, run_kwargs = mock_server_instance.run.call_args
     assert run_kwargs["port"] == 9000
@@ -268,6 +260,7 @@ async def test_mcp_observation_handler_passes_omniparser(monkeypatch):
         path=None,
         omniparser=False,
         no_dom=False,
+        **_kwargs,
     ):
         captured["instance_id"] = instance_id
         captured["screenshot"] = screenshot

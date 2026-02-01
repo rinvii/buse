@@ -1,11 +1,9 @@
 import base64
 import json
 from types import SimpleNamespace
-
 import httpx
 import pytest
 import typer
-
 import buse.main as main
 from buse.models import VisualAnalysis, VisualElement
 
@@ -177,9 +175,7 @@ def reset_globals(monkeypatch):
     main._omniparser_probe_cache.clear()
     monkeypatch.delenv("BUSE_IMAGE_QUALITY", raising=False)
     monkeypatch.delenv("BUSE_OMNIPARSER_URL", raising=False)
-
     monkeypatch.setattr(main, "BrowserSession", FakeBrowserSession)
-
     yield
     main.state.profile = False
 
@@ -204,24 +200,18 @@ def test_parse_image_quality_valid_env_and_normalize(monkeypatch):
 def test_settings_load_save_and_probe_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(main.session_manager, "config_dir", tmp_path)
     main._omniparser_probe_cache.clear()
-
     assert main._load_settings() == {}
-
     main._save_settings({"a": 1})
     settings_path = tmp_path / "settings.json"
     assert json.loads(settings_path.read_text())["a"] == 1
-
     settings_path.write_text("{bad")
     assert main._load_settings() == {}
-
     settings_path.write_text("[]")
     assert main._load_settings() == {}
-
     settings_path.write_text(json.dumps({"omniparser_probe": "nope"}))
     main._omniparser_probe_cache.clear()
     main._load_omniparser_probe_cache()
     assert main._omniparser_probe_cache == {}
-
     settings_path.write_text(
         json.dumps(
             {
@@ -237,7 +227,6 @@ def test_settings_load_save_and_probe_cache(monkeypatch, tmp_path):
     main._load_omniparser_probe_cache()
     assert main._omniparser_probe_cache["http://x"] == 1.0
     assert main._omniparser_probe_cache["http://y"] == 2.0
-
     main._omniparser_probe_cache["cached"] = 3.0
     main._load_omniparser_probe_cache()
 
@@ -344,7 +333,6 @@ def test_observe_omniparser_success(monkeypatch, tmp_path, capsys):
         "BrowserSession",
         lambda cdp_url=None: FakeBrowserSession([summary], cdp_session),
     )
-
     analysis = VisualAnalysis(
         elements=[
             VisualElement(
@@ -361,11 +349,9 @@ def test_observe_omniparser_success(monkeypatch, tmp_path, capsys):
     fake_client = FakeVisionClient()
     fake_client.analysis = analysis
     fake_client.som_image = base64.b64encode(b"som").decode("ascii")
-
     monkeypatch.setattr("buse.vision.VisionClient", lambda server_url=None: fake_client)
     monkeypatch.setattr("buse.utils.downscale_image", lambda *a, **k: a[0])
     main.state.profile = True
-
     out_path = tmp_path / "shots" / "out.png"
     main.observe(
         DummyCtx(),
@@ -374,7 +360,6 @@ def test_observe_omniparser_success(monkeypatch, tmp_path, capsys):
         omniparser=True,
         no_dom=False,
     )
-
     out = json.loads(capsys.readouterr().out)
     assert out["screenshot_path"].endswith("image_som.jpg")
     assert (tmp_path / "shots" / "image.jpg").exists()

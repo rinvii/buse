@@ -10,14 +10,11 @@ class MockBrowserTab:
 def test_parse_image_quality(monkeypatch):
     assert main._parse_image_quality(50) == 50
     assert main._parse_image_quality(None) is None
-
     monkeypatch.setenv("BUSE_IMAGE_QUALITY", "80")
     assert main._parse_image_quality(None) == 80
-
     monkeypatch.setenv("BUSE_IMAGE_QUALITY", "invalid")
     with pytest.raises(main.typer.BadParameter):
         main._parse_image_quality(None)
-
     monkeypatch.setenv("BUSE_IMAGE_QUALITY", "150")
     with pytest.raises(main.typer.BadParameter):
         main._parse_image_quality(None)
@@ -46,10 +43,8 @@ def test_is_reserved_key_sequence():
 def test_get_selector_cache_ttl_seconds(monkeypatch):
     monkeypatch.delenv("BUSE_SELECTOR_CACHE_TTL", raising=False)
     assert main._get_selector_cache_ttl_seconds() == 0.0
-
     monkeypatch.setenv("BUSE_SELECTOR_CACHE_TTL", "1.5")
     assert main._get_selector_cache_ttl_seconds() == 1.5
-
     monkeypatch.setenv("BUSE_SELECTOR_CACHE_TTL", "invalid")
     assert main._get_selector_cache_ttl_seconds() == 0.0
 
@@ -68,7 +63,6 @@ def test_normalize_tab_id():
     id_val, matched = main._normalize_tab_id("1234", tabs)
     assert id_val == "1234"
     assert matched is False
-
     id_val, matched = main._normalize_tab_id("long", tabs)
     assert id_val == "1234"
     assert matched is True
@@ -82,9 +76,7 @@ def test_coerce_index_error():
 
 def test_augment_error():
     assert main._augment_error("other", {}, "Error") == "Error"
-
     err = main._augment_error("click", {}, "Error")
     assert "Provide an index or use --id/--class" in err
-
     err = main._augment_error("navigate", {"url": "example.com"}, "site unavailable")
     assert "Include a scheme" in err

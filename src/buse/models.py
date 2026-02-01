@@ -21,7 +21,7 @@ class VisualElement(BaseModel):
     interactivity: bool
     center_x: float
     center_y: float
-    bbox: list[float]  # [xmin, ymin, xmax, ymax] in CSS pixels
+    bbox: list[float]
 
 
 class VisualAnalysis(BaseModel):
@@ -33,11 +33,17 @@ class Observation(BaseModel):
     session_id: str
     url: str
     title: str
+    observed_at: Optional[float] = None
     visual_analysis: Optional[VisualAnalysis] = None
     tabs: List[TabInfo]
     viewport: Optional[ViewportInfo] = None
     screenshot_path: Optional[str] = None
     dom_minified: str
+    semantic_snapshot: Optional[str] = None
+    semantic_truncated: Optional[bool] = None
+    diagnostics: Optional[dict[str, Any]] = None
+    som_labels: Optional[int] = None
+    som_labels_skipped: Optional[int] = None
 
 
 class ActionResult(BaseModel):

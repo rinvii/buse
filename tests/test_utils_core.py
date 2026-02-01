@@ -2,11 +2,9 @@ import asyncio
 import base64
 import io
 import json
-
 import pytest
 import typer
 from PIL import Image
-
 from buse import utils
 
 

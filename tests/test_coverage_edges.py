@@ -51,7 +51,7 @@ async def test_mcp_resources_coverage(monkeypatch):
     monkeypatch.setattr(mcp_server, "FastMCP", FakeFastMCP)
     session = SessionInfo(instance_id="b1", cdp_url="u", pid=1, user_data_dir="d")
     manager = FakeSessionManager({"b1": session})
-    server = mcp_server.BuseMCPServer(manager)  # type: ignore
+    server = mcp_server.BuseMCPServer(manager)  # type: ignore[arg-type]
     res = getattr(server.mcp, "resources")["buse://sessions"]()
     assert len(res["instances"]) == 1
     res = getattr(server.mcp, "resources")["buse://session/{instance_id}"]("b1")
@@ -67,7 +67,6 @@ async def test_get_observation_coverage_ultimate(monkeypatch):
     monkeypatch.setenv("BUSE_OMNIPARSER_URL", "http://omni")
     monkeypatch.setattr(main, "_should_probe_omniparser", MagicMock(return_value=False))
     monkeypatch.setattr(main.state, "profile", True)
-
     browser_session = MagicMock()
     monkeypatch.setattr(
         main,
@@ -76,14 +75,12 @@ async def test_get_observation_coverage_ultimate(monkeypatch):
     )
     browser_session.get_tabs = AsyncMock(return_value=[])
     browser_session.get_or_create_cdp_session = AsyncMock(return_value=AsyncMock())
-
     state_summary = MagicMock()
     state_summary.url = "u"
     state_summary.title = "t"
     state_summary.screenshot = "ZGF0YQ=="
     state_summary.dom_state = None
     browser_session.get_browser_state_summary = AsyncMock(return_value=state_summary)
-
     cdp = MagicMock()
     cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
         return_value={
@@ -96,7 +93,6 @@ async def test_get_observation_coverage_ultimate(monkeypatch):
         return_value={"data": "ZGF0YQ=="}
     )
     browser_session.get_or_create_cdp_session = AsyncMock(return_value=cdp)
-
     monkeypatch.setattr("builtins.open", MagicMock())
     monkeypatch.setattr(
         "buse.utils.downscale_image", MagicMock(return_value="ZGF0YQ==")
@@ -121,13 +117,11 @@ async def test_get_observation_coverage_ultimate(monkeypatch):
         )
     )
     monkeypatch.setattr("buse.vision.VisionClient", MagicMock(return_value=mock_client))
-
     with patch("pathlib.Path.mkdir"), patch("pathlib.Path.is_dir", return_value=False):
         with patch("pathlib.Path.suffix", ".png"):
             await main.get_observation(
                 "b1", screenshot=True, path="subdir/file.png", omniparser=True
             )
-
     state_summary.screenshot = None
     cdp.cdp_client.send.Page.captureScreenshot = AsyncMock(return_value={})
     await main.get_observation("b1", screenshot=True)
@@ -146,14 +140,12 @@ async def test_get_observation_timeout_retry_no_dom(monkeypatch):
         AsyncMock(return_value=(browser_session, MagicMock())),
     )
     browser_session.get_tabs = AsyncMock(return_value=[])
-
     mock_cdp = MagicMock()
     mock_cdp.cdp_client.send.Runtime.evaluate = AsyncMock(
         return_value={"result": {"value": {}}}
     )
     mock_cdp.cdp_client.send.Page.captureScreenshot = AsyncMock(return_value={})
     browser_session.get_or_create_cdp_session = AsyncMock(return_value=mock_cdp)
-
     browser_session.get_browser_state_summary = AsyncMock(
         side_effect=Exception("timeout error")
     )
@@ -167,7 +159,6 @@ async def test_get_observation_timeout_retry_no_dom(monkeypatch):
     )
     browser_session.event_bus.dispatch.return_value = event
     await main.get_observation("b1", no_dom=True, screenshot=True)
-
     browser_session.get_browser_state_summary = AsyncMock(side_effect=RuntimeError)
     with pytest.raises(RuntimeError):
         await main.get_observation("b1")
@@ -190,7 +181,6 @@ async def test_execute_tool_return_result_hover_none(monkeypatch):
         AsyncMock(return_value=(browser_session := MagicMock(), MagicMock())),
     )
     browser_session.get_tabs = AsyncMock(return_value=[])
-
     mock_controller = MagicMock()
     mock_controller.registry.execute_action = AsyncMock(
         return_value=ActionResult(success=True, action="a")
@@ -198,7 +188,6 @@ async def test_execute_tool_return_result_hover_none(monkeypatch):
     monkeypatch.setattr(main, "_controllers", {"b1": mock_controller})
     res = await main.execute_tool("b1", "click", {"index": 1}, return_result=True)
     assert res.success is True
-
     mock_emitter = MagicMock()
     monkeypatch.setattr(main, "ResultEmitter", MagicMock(return_value=mock_emitter))
     await main.execute_tool("b1", "hover", {"index": None})
@@ -220,7 +209,6 @@ async def test_save_state_stop_exception(monkeypatch):
     mock_bs.start = AsyncMock()
     mock_bs.stop = AsyncMock(side_effect=Exception)
     mock_bs.export_storage_state = AsyncMock(return_value={"cookies": []})
-
     with patch("buse.main.BrowserSession", return_value=mock_bs):
         await main.run_save_state("b1", "p")
 

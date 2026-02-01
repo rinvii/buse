@@ -5,7 +5,6 @@ import base64
 import io
 from enum import Enum
 from typing import Any, Optional
-
 import toon_format as toon
 import typer
 from pydantic import BaseModel
@@ -29,7 +28,6 @@ state = GlobalState()
 def _serialize(obj: Any) -> Any:
     if isinstance(obj, BaseModel):
         obj = obj.model_dump()
-
     if isinstance(obj, dict):
         if "bbox" in obj and isinstance(obj["bbox"], list):
             obj = dict(obj)
@@ -43,7 +41,6 @@ def _serialize(obj: Any) -> Any:
 def output_data(data: Any):
     """Helper to output data in the selected format."""
     dumped = _serialize(data)
-
     if state.format == OutputFormat.toon:
         print(toon.encode(dumped))
     else:
@@ -88,15 +85,12 @@ def downscale_image(
     """Converts a base64 image to compressed JPEG, optionally resizing it."""
     img_data = base64.b64decode(base64_str)
     img = Image.open(io.BytesIO(img_data))
-
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
-
     if max_width and img.width > max_width:
         ratio = max_width / float(img.width)
         new_height = int(float(img.height) * ratio)
         img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
-
     buffer = io.BytesIO()
     img.save(buffer, format="JPEG", quality=quality, optimize=True)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")

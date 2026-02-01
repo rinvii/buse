@@ -10,9 +10,7 @@ class FakeSessionManager:
 
 @pytest.fixture
 def server():
-    return BuseMCPServer(
-        FakeSessionManager()  # type: ignore
-    )
+    return BuseMCPServer(FakeSessionManager())  # type: ignore[arg-type]
 
 
 def test_run_stdio(server):
@@ -26,14 +24,11 @@ def test_run_stdio(server):
 def test_run_streamable_http(server):
     mock_app = MagicMock()
     server.mcp.streamable_http_app = MagicMock(return_value=mock_app)
-
     with patch("buse.mcp_server.Server") as MockUvicornServer:
         mock_uvicorn_instance = MockUvicornServer.return_value
         server.run(transport="streamable-http", port=9000)
-
         server.mcp.streamable_http_app.assert_called_once()
         MockUvicornServer.assert_called_once()
-
         config = MockUvicornServer.call_args[0][0]
         assert config.port == 9000
         mock_uvicorn_instance.run.assert_called_once()
@@ -42,11 +37,9 @@ def test_run_streamable_http(server):
 def test_run_sse(server):
     mock_app = MagicMock()
     server.mcp.sse_app = MagicMock(return_value=mock_app)
-
     with patch("buse.mcp_server.Server") as MockUvicornServer:
         mock_uvicorn_instance = MockUvicornServer.return_value
         server.run(transport="sse", port=9001)
-
         server.mcp.sse_app.assert_called_once()
         MockUvicornServer.assert_called_once()
         config = MockUvicornServer.call_args[0][0]

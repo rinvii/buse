@@ -6,8 +6,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, Optional
-
+from typing import Dict, Optional, Any
 from pydantic import BaseModel
 
 
@@ -66,7 +65,6 @@ class SessionManager:
 
         if psutil.pid_exists(session.pid):
             return self._cdp_ready(session.cdp_url)
-
         return self._cdp_ready(session.cdp_url)
 
     def get_session(self, instance_id: str) -> Optional[SessionInfo]:
@@ -83,10 +81,8 @@ class SessionManager:
         session = self.get_session(instance_id)
         if session:
             return session
-
         user_data_dir = self.config_dir / "profiles" / instance_id
         user_data_dir.mkdir(parents=True, exist_ok=True)
-
         existing_ports = []
         for s in self.sessions.values():
             try:
@@ -94,13 +90,10 @@ class SessionManager:
             except Exception:
                 pass
         port = self._find_free_port(set(existing_ports))
-
         chrome_path = self._find_chrome_executable()
-
         allow_origins = os.getenv("BUSE_REMOTE_ALLOW_ORIGINS")
         if not allow_origins:
             allow_origins = f"http://localhost:{port},http://127.0.0.1:{port}"
-
         args = [
             chrome_path,
             f"--remote-debugging-port={port}",
@@ -111,9 +104,8 @@ class SessionManager:
         ]
         if headless:
             args.append("--headless=new")
-
         sys_name = platform.system()
-        popen_kwargs: dict[str, object] = {
+        popen_kwargs: dict[str, Any] = {
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
         }
@@ -124,11 +116,8 @@ class SessionManager:
             popen_kwargs["creationflags"] = creationflags
         else:
             popen_kwargs["start_new_session"] = True
-
-        process = subprocess.Popen(args, **popen_kwargs)  # type: ignore[call-overload]
-
+        process = subprocess.Popen(args, **popen_kwargs)
         cdp_url = f"http://localhost:{port}"
-
         max_retries = 30
         ready = False
         for _ in range(max_retries):
@@ -142,7 +131,6 @@ class SessionManager:
             except Exception:
                 pass
             raise RuntimeError("Chrome started but CDP never became ready.")
-
         session_info = SessionInfo(
             instance_id=instance_id,
             cdp_url=cdp_url,
@@ -183,7 +171,6 @@ class SessionManager:
         override = os.getenv("BUSE_CHROME_PATH") or os.getenv("CHROME_PATH")
         if override and Path(override).exists():
             return override
-
         sys_name = platform.system()
         if sys_name == "Darwin":
             candidates = [
@@ -225,7 +212,6 @@ class SessionManager:
             path = shutil.which("chrome") or shutil.which("chrome.exe")
             if path:
                 return path
-
         raise RuntimeError(
             "Chrome executable not found. Please ensure Google Chrome is installed."
         )
@@ -242,7 +228,6 @@ class SessionManager:
                 proc.kill()
             except psutil.NoSuchProcess:
                 pass
-
             if instance_id in self.sessions:
                 del self.sessions[instance_id]
                 self._save_sessions()
