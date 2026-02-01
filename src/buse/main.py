@@ -596,7 +596,23 @@ def _make_mcp_tool_handler():
                 return _format_mcp_output(result)
             session_info = session_manager.get_session(instance_id)
             if not session_info:
-                raise ValueError(f"Instance {instance_id} not found.")
+                result = await execute_tool(
+                    instance_id,
+                    "click",
+                    {
+                        "index": index,
+                        "selector": selector,
+                        "element_id": element_id,
+                        "element_class": element_class,
+                        "coordinate_x": x,
+                        "coordinate_y": y,
+                    },
+                    return_result=True,
+                    action_label=action_label,
+                )
+                if hasattr(result, "model_dump"):
+                    result = result.model_dump()
+                return _format_mcp_output(result)
             browser_session, _ = await _get_browser_session(instance_id, session_info)
             cdp_session = await browser_session.get_or_create_cdp_session()
             button = "right" if right else "middle" if middle else "left"
@@ -797,7 +813,23 @@ def _make_mcp_tool_handler():
                 raise ValueError("fields must be a list")
             session_info = session_manager.get_session(instance_id)
             if not session_info:
-                raise ValueError(f"Instance {instance_id} not found.")
+                params = {
+                    "selector": selector,
+                    "element_id": element_id,
+                    "element_class": element_class,
+                }
+                if index is not None:
+                    params["index"] = (
+                        int(str(index)) if str(index).isdigit() else str(index)
+                    )
+                await execute_tool(
+                    instance_id,
+                    "click",
+                    params,
+                    needs_selector_map=(index is not None),
+                    action_label="click",
+                )
+                return
             browser_session, _ = await _get_browser_session(instance_id, session_info)
             cdp_session = await browser_session.get_or_create_cdp_session()
             await _ensure_selector_map(browser_session, instance_id)
@@ -2392,7 +2424,25 @@ def click(
         try:
             session_info = session_manager.get_session(instance_id)
             if not session_info:
-                raise ValueError(f"Instance {instance_id} not found.")
+                params = {
+                    "selector": selector,
+                    "element_id": element_id,
+                    "element_class": element_class,
+                    "coordinate_x": x,
+                    "coordinate_y": y,
+                }
+                if index is not None:
+                    params["index"] = (
+                        int(str(index)) if str(index).isdigit() else str(index)
+                    )
+                await execute_tool(
+                    instance_id,
+                    "click",
+                    params,
+                    needs_selector_map=(index is not None),
+                    action_label="click",
+                )
+                return
             browser_session, _ = await _get_browser_session(instance_id, session_info)
             cdp_session = await browser_session.get_or_create_cdp_session()
             button = "right" if right else "middle" if middle else "left"
